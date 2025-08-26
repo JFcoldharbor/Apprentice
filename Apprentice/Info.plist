@@ -2,9 +2,68 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>UIBackgroundModes</key>
-	<array>
-		<string>remote-notification</string>
-	</array>
+    <key>CKContainerIdentifier</key>
+    <string>iCloud.com.yourdomain.stitch-executive-ai</string>
+    <key>LSApplicationQueriesSchemes</key>
+    <array>
+        <string>mailto</string>
+        <string>message</string>
+    </array>
+    <key>MinimumOSVersion</key>
+    <string>16.0</string>
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsArbitraryLoads</key>
+        <false/>
+        <key>NSExceptionDomains</key>
+        <dict>
+            <key>api.openai.com</key>
+            <dict>
+                <key>NSExceptionAllowsInsecureHTTPLoads</key>
+                <false/>
+                <key>NSExceptionMinimumTLSVersion</key>
+                <string>TLSv1.2</string>
+                <key>NSExceptionRequiresForwardSecrecy</key>
+                <false/>
+                <key>NSIncludesSubdomains</key>
+                <true/>
+            </dict>
+        </dict>
+    </dict>
+    <key>NSCalendarsFullAccessUsageDescription</key>
+    <string>Stitch Executive AI needs full calendar access to automatically create coaching sessions, analyze meeting patterns, and provide intelligent scheduling recommendations for optimal executive productivity.</string>
+    <key>NSCalendarsWriteOnlyAccessUsageDescription</key>
+    <string>Stitch Executive AI uses calendar write access to schedule AI coaching sessions and create follow-up meetings based on your business intelligence insights and action items.</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Stitch Executive AI needs microphone access to record executive coaching sessions, provide voice-to-text transcription, and enable hands-free AI conversation features.</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>Stitch Executive AI uses speech recognition to transcribe coaching sessions and enable natural voice conversations with your AI executive assistant.</string>
+    <key>NSPrivacyTracking</key>
+    <false/>
+    <key>NSPrivacyTrackingDomains</key>
+    <array/>
+    <key>NSUserActivityTypes</key>
+    <array>
+        <string>com.yourdomain.stitch-executive-ai.start-coaching</string>
+        <string>com.yourdomain.stitch-executive-ai.record-session</string>
+    </array>
+    <key>UIBackgroundModes</key>
+    <array>
+        <string>audio</string>
+    </array>
+    <key>UIRequiresPersistentWiFi</key>
+    <false/>
+    <key>UISceneDelegate</key>
+    <dict/>
+    <key>com.apple.developer.icloud-container-identifiers</key>
+    <array>
+        <string>iCloud.com.yourdomain.stitch-executive-ai</string>
+    </array>
+    <key>NSDocumentsFolderUsageDescription</key>
+    <string>Stitch Executive AI needs access to analyze business documents for insights, extract key information, and provide intelligent recommendations based on your business data.</string>
+    <key>NSDownloadsFolderUsageDescription</key>
+    <string>Stitch Executive AI needs access to analyze downloaded business documents for comprehensive business intelligence and strategic insights.</string>
+    <key>NSDesktopFolderUsageDescription</key>
+    <string>Stitch Executive AI needs access to analyze desktop documents to provide complete business intelligence analysis and executive recommendations.</string>
 </dict>
 </plist>
