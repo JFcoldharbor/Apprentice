@@ -2,88 +2,85 @@
 //  AudioRecorder.swift
 //  Stitch Executive AI
 //
-//  Layer 4: Core Services - Enhanced with 10-minute chunking system
-//  UPDATED: Automatic chunking to prevent Whisper API transcription failures
+//  Layer 4: Core Services - Complete recording system with ChunkStorageManager integration
+//  COMPLETE: All methods, chunking system, immediate processing, and storage integration
 //
 
 import Foundation
-import AVFoundation
 import SwiftUI
+import AVFoundation
 
 @MainActor
 class AudioRecorder: NSObject, ObservableObject {
     
     // MARK: - Published Properties
-    
     @Published var isRecording = false
-    @Published var recordingDuration: TimeInterval = 0
-    @Published var currentRecordingURL: URL?
-    @Published var errorMessage: String?
     @Published var hasPermission = false
-    
-    // MARK: - NEW: Chunking System Properties
-    
-    @Published var currentChunk: Int = 1
-    @Published var totalChunks: Int = 1
-    @Published var chunkDuration: TimeInterval = 0
     @Published var recordingChunks: [RecordingChunk] = []
-    @Published var isProcessingChunks = false
+    @Published var processingProgress: Double = 0.0
+    @Published var completedChunks = 0
+    @Published var errorMessage: String?
     
-    // MARK: - Private Properties
+    // MARK: - ChunkStorageManager Integration
+    private let chunkStorageManager = ChunkStorageManager()
     
+    // MARK: - Recording State
     private var audioRecorder: AVAudioRecorder?
+    private var currentRecordingURL: URL?
+    
+    // Session tracking
+    private var sessionStartTime: Date?
+    private var startTime: Date?
     private var recordingTimer: Timer?
     private var chunkTimer: Timer?
-    private var startTime: Date?
-    private var sessionStartTime: Date?
     
-    // MARK: - Chunking Configuration
+    // Chunk management
+    @Published var currentChunk = 1
+    @Published var totalChunks = 1
+    @Published var chunkDuration: TimeInterval = 0
+    @Published var recordingDuration: TimeInterval = 0
     
-    private let chunkDurationMinutes: TimeInterval = 10.0 // 10-minute chunks
-    private let chunkDurationSeconds: TimeInterval = 10.0 * 60.0 // 600 seconds
-    private let maxFileSize: Int = 20_000_000 // 20MB safety limit (Whisper limit is 25MB)
-    
-    // MARK: - Computed Properties
-    
-    var formattedDuration: String {
-        let minutes = Int(recordingDuration) / 60
-        let seconds = Int(recordingDuration) % 60
-        return String(format: "%02d:%02d", minutes, seconds)
-    }
-    
-    var formattedChunkDuration: String {
-        let minutes = Int(chunkDuration) / 60
-        let seconds = Int(chunkDuration) % 60
-        return String(format: "%02d:%02d", minutes, seconds)
-    }
-    
-    var formattedSessionDuration: String {
-        guard let sessionStart = sessionStartTime else { return "00:00" }
-        let sessionDuration = Date().timeIntervalSince(sessionStart)
-        let minutes = Int(sessionDuration) / 60
-        let seconds = Int(sessionDuration) % 60
-        return String(format: "%02d:%02d", minutes, seconds)
-    }
+    // Configuration
+    private let chunkDurationSeconds: TimeInterval = 600 // 10 minutes
     
     // MARK: - Initialization
-    
     override init() {
         super.init()
-        checkPermissions()
-        loadExistingChunks()
+        Task {
+            await checkPermissions()
+            await loadExistingChunks()
+        }
+    }
+    
+    // MARK: - Load Existing Chunks from ChunkStorageManager
+    private func loadExistingChunks() async {
+        let existingChunks = await chunkStorageManager.loadAllChunks()
+        
+        await MainActor.run {
+            recordingChunks = existingChunks
+            print("🔄 Loaded \(existingChunks.count) chunks from ChunkStorageManager")
+        }
+        
+        // Update progress tracking
+        let completed = existingChunks.filter { $0.transcriptionState == .completed }.count
+        await MainActor.run {
+            completedChunks = completed
+            processingProgress = recordingChunks.isEmpty ? 0.0 : Double(completed) / Double(recordingChunks.count)
+        }
     }
     
     // MARK: - Permission Management
-
-    func checkPermissions() {
+    private func checkPermissions() async {
         switch AVAudioSession.sharedInstance().recordPermission {
         case .granted:
             hasPermission = true
         case .denied:
             hasPermission = false
         case .undetermined:
-            Task {
-                try? await requestPermission()
+            do {
+                try await requestPermission()
+            } catch {
+                hasPermission = false
             }
         @unknown default:
             hasPermission = false
@@ -104,8 +101,7 @@ class AudioRecorder: NSObject, ObservableObject {
         }
     }
     
-    // MARK: - Enhanced Recording Methods with Chunking
-    
+    // MARK: - Recording Control
     func startRecording() {
         guard hasPermission else {
             errorMessage = "Microphone permission required"
@@ -154,6 +150,33 @@ class AudioRecorder: NSObject, ObservableObject {
         }
     }
     
+    func stopRecording() {
+        guard isRecording else {
+            print("⚠️ Not currently recording")
+            return
+        }
+        
+        // Finish current chunk without starting next
+        finishCurrentChunk(startNext: false)
+        
+        // Deactivate audio session
+        try? AVAudioSession.sharedInstance().setActive(false)
+        
+        print("🛑 Recording session stopped")
+        
+        // Save to ChunkStorageManager
+        saveChunksToStorage()
+    }
+    
+    func toggleRecording() {
+        if isRecording {
+            stopRecording()
+        } else {
+            startRecording()
+        }
+    }
+    
+    // MARK: - Chunk Management with Storage Integration
     private func finishCurrentChunk(startNext: Bool = true) {
         guard let recorder = audioRecorder,
               let chunkURL = currentRecordingURL else {
@@ -173,10 +196,19 @@ class AudioRecorder: NSObject, ObservableObject {
             fileSize: getFileSize(url: chunkURL),
             timestamp: Date()
         )
+        
         recordingChunks.append(chunk)
         
         print("✅ Completed chunk \(currentChunk): \(chunk.formattedDuration)")
         print("📁 File size: \(chunk.formattedFileSize)")
+        
+        // Immediate processing with storage integration
+        Task {
+            await processChunkImmediately(chunk)
+        }
+        
+        // Save to storage immediately
+        saveChunksToStorage()
         
         if startNext {
             // Prepare for next chunk
@@ -192,67 +224,102 @@ class AudioRecorder: NSObject, ObservableObject {
             // Recording session complete
             isRecording = false
             print("🎉 Recording session completed with \(recordingChunks.count) chunks")
-            print("📊 Total duration: \(formattedSessionDuration)")
         }
     }
     
-    func stopRecording() {
-        guard isRecording else {
-            print("⚠️ Not currently recording")
-            return
-        }
+    // MARK: - Immediate Chunk Processing with Storage Integration
+    private func processChunkImmediately(_ chunk: RecordingChunk) async {
+        print("🔥 Starting immediate transcription for chunk \(chunk.number)")
         
-        // Finish current chunk without starting next
-        finishCurrentChunk(startNext: false)
+        // Mark as processing in storage
+        await chunkStorageManager.markChunkAsProcessing(chunkId: chunk.id)
         
-        // Deactivate audio session
-        try? AVAudioSession.sharedInstance().setActive(false)
-        
-        print("🏁 Recording session stopped")
-        saveChunksMetadata()
-    }
-    
-    func toggleRecording() {
-        if isRecording {
-            stopRecording()
-        } else {
-            startRecording()
-        }
-    }
-    
-    // MARK: - Chunk Processing
-    
-    func processAllChunks() async -> [String] {
-        guard !recordingChunks.isEmpty else {
-            print("⚠️ No chunks to process")
-            return []
-        }
-        
-        isProcessingChunks = true
-        var transcriptions: [String] = []
-        
-        print("🔄 Processing \(recordingChunks.count) audio chunks...")
-        
-        for (index, chunk) in recordingChunks.enumerated() {
-            do {
-                print("📝 Transcribing chunk \(chunk.number) (\(index + 1)/\(recordingChunks.count))...")
-                
-                // Use RealAIService for transcription
-                let aiService = RealAIService()
-                let transcription = try await aiService.transcribeAudio(audioURL: chunk.url)
-                
-                transcriptions.append(transcription)
-                print("✅ Chunk \(chunk.number) transcribed: \(transcription.prefix(100))...")
-                
-            } catch {
-                print("❌ Failed to transcribe chunk \(chunk.number): \(error)")
-                transcriptions.append("[Transcription failed for chunk \(chunk.number)]")
+        // Update local state
+        await MainActor.run {
+            if let index = recordingChunks.firstIndex(where: { $0.id == chunk.id }) {
+                recordingChunks[index].transcriptionState = .processing
             }
         }
         
-        isProcessingChunks = false
-        print("🎉 All chunks processed!")
+        do {
+            // Use RealAIService for transcription
+            let aiService = RealAIService()
+            let transcription = try await aiService.transcribeAudio(audioURL: chunk.url)
+            
+            // Save completed state to storage
+            await chunkStorageManager.markChunkAsCompleted(chunkId: chunk.id, transcription: transcription)
+            
+            // Update local state
+            await MainActor.run {
+                if let index = recordingChunks.firstIndex(where: { $0.id == chunk.id }) {
+                    recordingChunks[index].transcriptionState = .completed
+                    recordingChunks[index].transcriptionText = transcription
+                    recordingChunks[index].processedAt = Date()
+                    completedChunks += 1
+                    processingProgress = Double(completedChunks) / Double(recordingChunks.count)
+                }
+            }
+            
+            print("✅ Chunk \(chunk.number) transcribed and saved to storage")
+            
+        } catch {
+            print("❌ Immediate transcription failed for chunk \(chunk.number): \(error)")
+            
+            // Save failed state to storage
+            await chunkStorageManager.markChunkAsFailed(chunkId: chunk.id, error: error.localizedDescription)
+            
+            // Update local state
+            await MainActor.run {
+                if let index = recordingChunks.firstIndex(where: { $0.id == chunk.id }) {
+                    recordingChunks[index].transcriptionState = .failed
+                    recordingChunks[index].lastError = error.localizedDescription
+                    recordingChunks[index].retryCount += 1
+                }
+            }
+        }
+    }
+    
+    // MARK: - Save Chunks using ChunkStorageManager
+    private func saveChunksToStorage() {
+        Task {
+            await chunkStorageManager.saveAllChunks(recordingChunks)
+            print("💾 All chunks saved to ChunkStorageManager")
+        }
+    }
+    
+    // MARK: - Processing Methods
+    func processAllChunks() async -> [String] {
+        var transcriptions: [String] = []
         
+        print("📊 Processing \(recordingChunks.count) chunks...")
+        
+        for chunk in recordingChunks.sorted(by: { $0.number < $1.number }) {
+            if chunk.transcriptionState == .completed, let transcription = chunk.transcriptionText {
+                transcriptions.append(transcription)
+            } else if chunk.transcriptionState == .pending || chunk.transcriptionState == .failed {
+                // Try to process this chunk
+                do {
+                    let aiService = RealAIService()
+                    let transcription = try await aiService.transcribeAudio(audioURL: chunk.url)
+                    transcriptions.append(transcription)
+                    
+                    // Update chunk state
+                    await MainActor.run {
+                        if let index = recordingChunks.firstIndex(where: { $0.id == chunk.id }) {
+                            recordingChunks[index].transcriptionState = .completed
+                            recordingChunks[index].transcriptionText = transcription
+                            recordingChunks[index].processedAt = Date()
+                        }
+                    }
+                } catch {
+                    transcriptions.append("[Transcription failed for chunk \(chunk.number): \(error.localizedDescription)]")
+                }
+            } else {
+                transcriptions.append("[Chunk \(chunk.number) in processing state]")
+            }
+        }
+        
+        print("🎉 Processed \(transcriptions.count) transcriptions!")
         return transcriptions
     }
     
@@ -267,23 +334,71 @@ class AudioRecorder: NSObject, ObservableObject {
         return combined
     }
     
-    // MARK: - Private Setup Methods
+    // MARK: - Recovery Functions using ChunkStorageManager
+    func recoverFailedChunks() async {
+        let failedChunks = await chunkStorageManager.loadFailedChunks()
+        
+        print("🔄 Found \(failedChunks.count) failed chunks to recover")
+        
+        for chunk in failedChunks {
+            // Retry transcription
+            await processChunkImmediately(chunk)
+        }
+        
+        // Reload all chunks after recovery
+        await loadExistingChunks()
+    }
     
+    func getChunkStorageStats() async -> String {
+        return await chunkStorageManager.exportChunksForDebug()
+    }
+    
+    // MARK: - Cleanup Methods
+    func deleteAllChunks() {
+        for chunk in recordingChunks {
+            do {
+                try FileManager.default.removeItem(at: chunk.url)
+                print("🗑️ Deleted chunk file: \(chunk.url.lastPathComponent)")
+            } catch {
+                print("⚠️ Failed to delete chunk file: \(error)")
+            }
+        }
+        
+        recordingChunks.removeAll()
+        currentChunk = 1
+        totalChunks = 1
+        completedChunks = 0
+        processingProgress = 0.0
+        
+        // Clear from storage
+        Task {
+            await chunkStorageManager.clearAllChunks()
+        }
+        
+        print("🗑️ All chunks deleted and reset")
+    }
+    
+    func deleteRecording(at url: URL) {
+        do {
+            try FileManager.default.removeItem(at: url)
+            print("🗑️ Deleted recording: \(url.lastPathComponent)")
+        } catch {
+            print("❌ Failed to delete recording: \(error)")
+        }
+    }
+    
+    // MARK: - Audio Setup Methods
     private func setupAudioSession() throws {
         let audioSession = AVAudioSession.sharedInstance()
-        
         try audioSession.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker])
         try audioSession.setActive(true)
-        
-        print("🔊 Audio session configured")
+        print("📻 Audio session configured")
     }
     
     private func setupRecorder(chunkNumber: Int) throws {
-        // Create unique filename for chunk
         let timestamp = DateFormatter.fileTimestamp.string(from: Date())
         let filename = "chunk_\(chunkNumber)_\(timestamp).m4a"
         
-        // Get documents directory
         let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         currentRecordingURL = documentsPath.appendingPathComponent(filename)
         
@@ -291,7 +406,6 @@ class AudioRecorder: NSObject, ObservableObject {
             throw RecordingError.fileCreationFailed
         }
         
-        // Audio settings optimized for speech
         let settings: [String: Any] = [
             AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
             AVSampleRateKey: 44100.0,
@@ -304,46 +418,42 @@ class AudioRecorder: NSObject, ObservableObject {
         audioRecorder?.isMeteringEnabled = true
         audioRecorder?.prepareToRecord()
         
-        print("📱 Recorder setup for chunk \(chunkNumber)")
+        print("🔱 Recorder setup for chunk \(chunkNumber)")
     }
     
     // MARK: - Timer Management
-    
     private func startTimers() {
-        // Main duration timer (updates every 0.1 seconds)
         recordingTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
             self?.updateDurations()
         }
         
-        // Chunk timer (triggers every 10 minutes)
         chunkTimer = Timer.scheduledTimer(withTimeInterval: chunkDurationSeconds, repeats: true) { [weak self] _ in
-            self?.handleChunkTimeout()
+            self?.finishCurrentChunk(startNext: true)
         }
+        
+        print("⏱️ Timers started")
     }
     
     private func stopTimers() {
         recordingTimer?.invalidate()
-        recordingTimer = nil
-        
         chunkTimer?.invalidate()
+        recordingTimer = nil
         chunkTimer = nil
+        
+        print("⏹️ Timers stopped")
     }
     
     private func updateDurations() {
-        guard let startTime = startTime,
-              let sessionStart = sessionStartTime else { return }
+        guard let startTime = startTime else { return }
         
         chunkDuration = Date().timeIntervalSince(startTime)
-        recordingDuration = Date().timeIntervalSince(sessionStart)
+        
+        if let sessionStart = sessionStartTime {
+            recordingDuration = Date().timeIntervalSince(sessionStart)
+        }
     }
     
-    private func handleChunkTimeout() {
-        print("⏰ Chunk timeout reached - switching to next chunk")
-        finishCurrentChunk(startNext: true)
-    }
-    
-    // MARK: - File Management
-    
+    // MARK: - Helper Methods
     private func getFileSize(url: URL) -> Int {
         do {
             let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
@@ -353,152 +463,58 @@ class AudioRecorder: NSObject, ObservableObject {
         }
     }
     
-    private func saveChunksMetadata() {
-        // Save chunk metadata for potential recovery
-        if let data = try? JSONEncoder().encode(recordingChunks) {
-            let metadataURL = getDocumentsDirectory().appendingPathComponent("chunks_metadata.json")
-            try? data.write(to: metadataURL)
-            print("💾 Saved chunks metadata")
-        }
-    }
-    
-    private func loadExistingChunks() {
-        let metadataURL = getDocumentsDirectory().appendingPathComponent("chunks_metadata.json")
-        
-        if let data = try? Data(contentsOf: metadataURL),
-           let chunks = try? JSONDecoder().decode([RecordingChunk].self, from: data) {
-            recordingChunks = chunks
-            print("📂 Loaded \(chunks.count) existing chunks")
-        }
-    }
-    
-    private func getDocumentsDirectory() -> URL {
-        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-    }
-    
-    func deleteRecording(at url: URL) {
-        do {
-            try FileManager.default.removeItem(at: url)
-            print("🗑️ Deleted recording: \(url.lastPathComponent)")
-        } catch {
-            print("❌ Failed to delete recording: \(error)")
-        }
-    }
-    
-    func deleteAllChunks() {
-        for chunk in recordingChunks {
-            deleteRecording(at: chunk.url)
-        }
-        recordingChunks.removeAll()
-        
-        // Delete metadata
-        let metadataURL = getDocumentsDirectory().appendingPathComponent("chunks_metadata.json")
-        try? FileManager.default.removeItem(at: metadataURL)
-        
-        print("🗑️ Deleted all recording chunks")
-    }
-    
-    // MARK: - Error Handling
-    
     private func handleError(_ error: Error) {
-        Task { @MainActor in
-            isRecording = false
-            stopTimers()
-            
-            if let recordingError = error as? RecordingError {
-                errorMessage = recordingError.localizedDescription
-            } else {
-                errorMessage = "Recording failed: \(error.localizedDescription)"
-            }
-            
-            print("❌ Recording error: \(error)")
-        }
+        errorMessage = error.localizedDescription
+        isRecording = false
+        print("❌ Recording error: \(error)")
+    }
+    
+    // MARK: - Computed Properties
+    var formattedChunkDuration: String {
+        let minutes = Int(chunkDuration) / 60
+        let seconds = Int(chunkDuration) % 60
+        return String(format: "%02d:%02d", minutes, seconds)
+    }
+    
+    var formattedSessionDuration: String {
+        guard let sessionStart = sessionStartTime else { return "00:00" }
+        let sessionDuration = Date().timeIntervalSince(sessionStart)
+        let minutes = Int(sessionDuration) / 60
+        let seconds = Int(sessionDuration) % 60
+        return String(format: "%02d:%02d", minutes, seconds)
+    }
+    
+    var formattedDuration: String {
+        let minutes = Int(recordingDuration) / 60
+        let seconds = Int(recordingDuration) % 60
+        return String(format: "%02d:%02d", minutes, seconds)
     }
 }
 
-// MARK: - AVAudioRecorderDelegate
-
+// MARK: - AudioRecorder Delegate
 extension AudioRecorder: AVAudioRecorderDelegate {
-    
     func audioRecorderDidFinishRecording(_ recorder: AVAudioRecorder, successfully flag: Bool) {
         print("🎤 Chunk recording finished successfully: \(flag)")
         
         if !flag {
-            Task { @MainActor in
-                self.errorMessage = "Chunk recording failed to complete"
-            }
+            errorMessage = "Chunk recording failed to complete"
         }
     }
     
     func audioRecorderEncodeErrorDidOccur(_ recorder: AVAudioRecorder, error: Error?) {
         print("❌ Recording encode error: \(error?.localizedDescription ?? "Unknown")")
         
-        Task { @MainActor in
-            self.handleError(error ?? RecordingError.encodingFailed)
+        if let error = error {
+            handleError(error)
         }
     }
 }
 
-// MARK: - Recording Chunk Model
-
-struct RecordingChunk: Codable, Identifiable {
-    let id = UUID()
-    let number: Int
-    let url: URL
-    let duration: TimeInterval
-    let fileSize: Int
-    let timestamp: Date
-    
-    var formattedDuration: String {
-        let minutes = Int(duration) / 60
-        let seconds = Int(duration) % 60
-        return String(format: "%02d:%02d", minutes, seconds)
-    }
-    
-    var formattedFileSize: String {
-        let mb = Double(fileSize) / (1024 * 1024)
-        return String(format: "%.1f MB", mb)
-    }
-    
-    var isValidSize: Bool {
-        return fileSize < 20_000_000 // 20MB safety limit
-    }
-}
-
-// MARK: - Recording Errors
-
-enum RecordingError: Error, LocalizedError {
-    case permissionDenied
-    case setupFailed
-    case fileCreationFailed
-    case recordingFailed
-    case encodingFailed
-    case chunkSizeExceeded
-    
-    var errorDescription: String? {
-        switch self {
-        case .permissionDenied:
-            return "Microphone permission denied"
-        case .setupFailed:
-            return "Failed to setup audio recorder"
-        case .fileCreationFailed:
-            return "Failed to create recording file"
-        case .recordingFailed:
-            return "Recording failed to start"
-        case .encodingFailed:
-            return "Audio encoding failed"
-        case .chunkSizeExceeded:
-            return "Recording chunk exceeded size limit"
-        }
-    }
-}
-
-// MARK: - DateFormatter Extension
-
-private extension DateFormatter {
+// MARK: - Date Formatter Extension
+extension DateFormatter {
     static let fileTimestamp: DateFormatter = {
         let formatter = DateFormatter()
-        formatter.dateFormat = "yyyyMMdd_HHmmss"
+        formatter.dateFormat = "yyyy_MM_dd_HH_mm_ss"
         return formatter
     }()
 }

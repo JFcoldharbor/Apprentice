@@ -1,4 +1,12 @@
 //
+//  ConversationSession.swift
+//  Apprentice
+//
+//  Created by James Garmon on 8/26/25.
+//
+
+
+//
 //  MemoryConnectionCalculator.swift
 //  Stitch Executive AI
 //
@@ -288,9 +296,7 @@ struct MemoryConnectionCalculator {
         return groups
     }
     
-    // MARK: - PUBLIC: Conversation-to-Session Conversion (CHANGED FROM PRIVATE)
-    
-    public func convertToExecutiveSession(_ conversationSession: ConversationSession) -> ExecutiveSession {
+    private func convertToExecutiveSession(_ conversationSession: ConversationSession) -> ExecutiveSession {
         // Create structured note from conversation
         let note = StructuredNote(
             id: UUID(),
@@ -303,7 +309,7 @@ struct MemoryConnectionCalculator {
                     id: UUID(),
                     title: String($0.prefix(50)),
                     description: $0,
-                    assignee: nil,
+                    assignee: "AI Coach",  // ✅ FIXED: Provide default assignee
                     dueDate: nil,
                     priority: .medium,
                     status: .pending,
@@ -401,256 +407,57 @@ struct MemoryConnectionCalculator {
         return conversationActions.isEmpty ? 0 : Double(matchingConcepts.count) / Double(conversationActions.count)
     }
     
-    // MARK: - Core Connection Analysis
-    
-    private func calculateConnection(from sessionA: ExecutiveSession, to sessionB: ExecutiveSession) -> SessionConnection? {
-        var reasons: [ConnectionReason] = []
-        var totalScore: Double = 0
-        
-        // Time proximity analysis
-        let timeScore = calculateTimeProximityScore(sessionA: sessionA, sessionB: sessionB)
-        if timeScore.score > 0 {
-            reasons.append(timeScore.reason)
-            totalScore += timeScore.score * 0.3
-        }
-        
-        // Topic similarity analysis
-        let topicScore = calculateTopicSimilarityScore(sessionA: sessionA, sessionB: sessionB)
-        if topicScore.score > 0 {
-            reasons.append(topicScore.reason)
-            totalScore += topicScore.score * 0.4
-        }
-        
-        // Attendee overlap analysis
-        let attendeeScore = calculateAttendeeOverlapScore(sessionA: sessionA, sessionB: sessionB)
-        if attendeeScore.score > 0 {
-            reasons.append(attendeeScore.reason)
-            totalScore += attendeeScore.score * 0.2
-        }
-        
-        // Action item continuity
-        let actionScore = calculateActionItemContinuity(sessionA: sessionA, sessionB: sessionB)
-        if actionScore.score > 0 {
-            reasons.append(actionScore.reason)
-            totalScore += actionScore.score * 0.1
-        }
-        
-        guard totalScore > minimumConnectionScore && !reasons.isEmpty else { return nil }
-        
-        let connectionType = determineConnectionType(sessionA: sessionA, sessionB: sessionB, score: totalScore)
-        
-        return SessionConnection(
-            sourceSessionId: sessionA.id,
-            targetSessionId: sessionB.id,
-            connectionType: connectionType,
-            strength: ConnectionStrength.from(score: totalScore),
-            score: totalScore,
-            reasons: reasons
-        )
-    }
-    
-    // MARK: - Scoring Helper Methods
-    
-    private func calculateTimeProximityScore(sessionA: ExecutiveSession, sessionB: ExecutiveSession) -> (score: Double, reason: ConnectionReason) {
-        let timeDiff = abs(sessionA.date.timeIntervalSince(sessionB.date))
-        let daysDiff = timeDiff / (24 * 3600)
-        
-        let score = max(0, 1.0 - (daysDiff / Double(maxTimeGapDays)))
-        
-        let reason = ConnectionReason(
-            type: .timeProximity,
-            description: "Sessions occurred \(Int(daysDiff)) days apart",
-            confidence: score,
-            evidence: ["Time gap: \(Int(daysDiff)) days"]
-        )
-        
-        return (score: score > 0.1 ? score : 0, reason: reason)
-    }
-    
-    private func calculateTopicSimilarityScore(sessionA: ExecutiveSession, sessionB: ExecutiveSession) -> (score: Double, reason: ConnectionReason) {
-        let keywordsA = Set(extractKeywords(from: sessionA))
-        let keywordsB = Set(extractKeywords(from: sessionB))
-        
-        let intersection = keywordsA.intersection(keywordsB)
-        let union = keywordsA.union(keywordsB)
-        
-        let score = union.isEmpty ? 0 : Double(intersection.count) / Double(union.count)
-        
-        let reason = ConnectionReason(
-            type: .topicOverlap,
-            description: "Shared \(intersection.count) common topics: \(Array(intersection).prefix(3).joined(separator: ", "))",
-            confidence: score,
-            evidence: Array(intersection).map { "Topic: \($0)" }
-        )
-        
-        return (score: score > keywordSimilarityThreshold ? score : 0, reason: reason)
-    }
-    
-    private func calculateAttendeeOverlapScore(sessionA: ExecutiveSession, sessionB: ExecutiveSession) -> (score: Double, reason: ConnectionReason) {
-        let attendeesA = Set(sessionA.attendees)
-        let attendeesB = Set(sessionB.attendees)
-        
-        let intersection = attendeesA.intersection(attendeesB)
-        let union = attendeesA.union(attendeesB)
-        
-        let score = union.isEmpty ? 0 : Double(intersection.count) / Double(union.count)
-        
-        let reason = ConnectionReason(
-            type: .sharedAttendees,
-            description: "Shared \(intersection.count) attendees: \(Array(intersection).joined(separator: ", "))",
-            confidence: score,
-            evidence: Array(intersection).map { "Attendee: \($0)" }
-        )
-        
-        return (score: score > 0.3 ? score : 0, reason: reason)
-    }
-    
-    private func calculateActionItemContinuity(sessionA: ExecutiveSession, sessionB: ExecutiveSession) -> (score: Double, reason: ConnectionReason) {
-        let actionsA = Set(sessionA.notes.flatMap { $0.actionItems.map { $0.title.lowercased() } })
-        let actionsB = Set(sessionB.notes.flatMap { $0.actionItems.map { $0.title.lowercased() } })
-        
-        let continuityScore = actionsA.isEmpty ? 0 : Double(actionsA.intersection(actionsB).count) / Double(actionsA.count)
-        
-        let reason = ConnectionReason(
-            type: .actionItemLink,
-            description: "Action items continue across sessions",
-            confidence: continuityScore,
-            evidence: ["Continuing actions detected"]
-        )
-        
-        return (score: continuityScore > 0.2 ? continuityScore : 0, reason: reason)
-    }
-    
-    // MARK: - Helper Methods
-    
-    private func extractKeywords(from session: ExecutiveSession) -> [String] {
-        var keywords: [String] = []
-        
-        // Extract from title
-        keywords.append(contentsOf: session.title.components(separatedBy: .whitespaces))
-        
-        // Extract from notes
-        for note in session.notes {
-            keywords.append(contentsOf: note.content.components(separatedBy: .whitespaces))
-            keywords.append(contentsOf: note.insights)
-        }
-        
-        // Clean and filter keywords
-        return keywords
-            .map { $0.lowercased().trimmingCharacters(in: .punctuationCharacters) }
-            .filter { $0.count > 3 }
-            .filter { !["this", "that", "with", "from", "they", "were", "been", "have", "will", "would", "could", "should"].contains($0) }
-    }
-    
-    private func determineConnectionType(sessionA: ExecutiveSession, sessionB: ExecutiveSession, score: Double) -> ConnectionType {
-        if score > criticalConnectionThreshold {
-            return .followUp
-        } else if score > strongConnectionThreshold {
-            return .strategicThread
-        } else {
-            return .topicSimilarity
-        }
-    }
-    
-    private func buildCluster(startingFrom session: ExecutiveSession, sessions: [ExecutiveSession], connections: [SessionConnection]) -> SessionCluster {
-        var clusterSessions: Set<UUID> = [session.id]
-        var queue: [UUID] = [session.id]
-        
-        while !queue.isEmpty {
-            let currentId = queue.removeFirst()
-            
-            // Find connections from this session
-            let relatedConnections = connections.filter {
-                ($0.sourceSessionId == currentId || $0.targetSessionId == currentId) &&
-                $0.score > strongConnectionThreshold
-            }
-            
-            for connection in relatedConnections {
-                let relatedId = connection.sourceSessionId == currentId ? connection.targetSessionId : connection.sourceSessionId
-                
-                if !clusterSessions.contains(relatedId) {
-                    clusterSessions.insert(relatedId)
-                    queue.append(relatedId)
-                }
-            }
-        }
-        
-        let clusterSessionObjects = sessions.filter { clusterSessions.contains($0.id) }
-        let relevantConnections = connections.filter {
-            clusterSessions.contains($0.sourceSessionId) && clusterSessions.contains($0.targetSessionId)
-        }
-        
-        // Calculate cluster metrics
-        let averageDate = Date(timeIntervalSince1970: clusterSessionObjects.map { $0.date.timeIntervalSince1970 }.reduce(0, +) / Double(clusterSessionObjects.count))
-        let averageConnectionStrength = relevantConnections.isEmpty ? 0 : relevantConnections.map { $0.score }.reduce(0, +) / Double(relevantConnections.count)
-        
-        // Extract dominant topics
-        let allKeywords = clusterSessionObjects.flatMap { extractKeywords(from: $0) }
-        let keywordCounts = Dictionary(grouping: allKeywords) { $0 }.mapValues { $0.count }
-        let dominantTopics = keywordCounts.sorted { $0.value > $1.value }.prefix(5).map { $0.key }
-        
-        // Extract key attendees
-        let allAttendees = clusterSessionObjects.flatMap { $0.attendees }
-        let attendeeCounts = Dictionary(grouping: allAttendees) { $0 }.mapValues { $0.count }
-        let keyAttendees = attendeeCounts.sorted { $0.value > $1.value }.prefix(5).map { $0.key }
-        
-        return SessionCluster(
-            name: "Cluster: \(dominantTopics.first ?? "Sessions")",
-            sessions: Array(clusterSessions),
-            centerOfMass: averageDate,
-            cohesion: averageConnectionStrength,
-            dominantTopics: Array(dominantTopics),
-            keyAttendees: Array(keyAttendees),
-            businessImpact: averageConnectionStrength > 0.8 ? .high : averageConnectionStrength > 0.6 ? .medium : .low
-        )
-    }
-    
-    // MARK: - Conversation Pattern Analysis
+    // MARK: - Conversation-Specific Insights
     
     private func analyzeConversationPatterns(conversationSessions: [ExecutiveSession]) -> [MemoryInsight] {
-        guard conversationSessions.count >= 3 else { return [] }
+        guard !conversationSessions.isEmpty else { return [] }
         
-        // Analyze conversation frequency
-        let conversationDates = conversationSessions.map { $0.date }.sorted()
-        let intervals = zip(conversationDates.dropFirst(), conversationDates).map { $0.0.timeIntervalSince($0.1) }
-        let averageInterval = intervals.reduce(0, +) / Double(intervals.count)
+        // Analyze coaching frequency
+        let dailyCoaching = Dictionary(grouping: conversationSessions) { session in
+            Calendar.current.startOfDay(for: session.date)
+        }
         
-        let frequency = averageInterval < 86400 ? "daily" : averageInterval < 604800 ? "weekly" : "monthly"
+        let averageSessionsPerDay = Double(conversationSessions.count) / Double(dailyCoaching.count)
         
-        return [MemoryInsight(
-            id: UUID(),
-            title: "AI Coaching Engagement Pattern",
-            description: "User engages in AI coaching conversations \(frequency) with \(conversationSessions.count) sessions analyzed.",
-            insightType: .strategicAlignment,
-            confidence: 0.8,
-            relevantSessions: conversationSessions.map { $0.id },
-            relevantConnections: [],
-            actionableRecommendations: [
-                "Continue regular coaching engagement",
-                "Track conversation themes for patterns",
-                "Consider deeper strategic discussions"
-            ],
-            businessValue: .medium,
-            createdAt: Date()
-        )]
+        if averageSessionsPerDay > 2 {
+            return [MemoryInsight(
+                id: UUID(),
+                title: "High Coaching Engagement",
+                description: "Averaging \(String(format: "%.1f", averageSessionsPerDay)) coaching sessions per day shows strong commitment to development.",
+                insightType: .strategicAlignment,
+                confidence: 0.8,
+                relevantSessions: conversationSessions.map { $0.id },
+                relevantConnections: [],
+                actionableRecommendations: [
+                    "Continue current coaching momentum",
+                    "Consider documenting key insights for team sharing",
+                    "Schedule regular review of coaching outcomes"
+                ],
+                businessValue: BusinessImpact.high,
+                createdAt: Date()
+            )]
+        }
+        
+        return []
     }
     
     private func analyzeCoachingEffectiveness(conversationSessions: [ExecutiveSession], businessSessions: [ExecutiveSession]) -> [MemoryInsight] {
-        // Find business sessions that occurred after coaching conversations
-        let coachingDates = conversationSessions.map { $0.date }
+        // Find sessions that happened after coaching conversations
+        let coachingDates = Set(conversationSessions.map { Calendar.current.startOfDay(for: $0.date) })
         let sessionsAfterCoaching = businessSessions.filter { session in
             coachingDates.contains { coachingDate in
-                session.date > coachingDate && session.date.timeIntervalSince(coachingDate) < 604800 // Within a week
+                let sessionDate = Calendar.current.startOfDay(for: session.date)
+                return sessionDate > coachingDate && sessionDate.timeIntervalSince(coachingDate) < 86400 * 3
             }
         }
         
-        if sessionsAfterCoaching.count >= 2 {
+        if !sessionsAfterCoaching.isEmpty {
             let effectiveness = Double(sessionsAfterCoaching.count) / Double(conversationSessions.count)
             
             return [MemoryInsight(
                 id: UUID(),
-                title: "Coaching-to-Action Effectiveness",
-                description: "AI coaching conversations led to \(sessionsAfterCoaching.count) follow-up business sessions within a week, indicating \(Int(effectiveness * 100))% coaching effectiveness.",
+                title: "Coaching Implementation Success",
+                description: "\(sessionsAfterCoaching.count) business sessions occurred within 3 days of coaching conversations, showing \(Int(effectiveness * 100))% implementation rate.",
                 insightType: .strategicAlignment,
                 confidence: min(effectiveness, 0.9),
                 relevantSessions: conversationSessions.map { $0.id } + sessionsAfterCoaching.map { $0.id },
@@ -660,7 +467,7 @@ struct MemoryConnectionCalculator {
                     "Identify topics that lead to quick implementation",
                     "Schedule follow-up sessions for complex discussions"
                 ],
-                businessValue: effectiveness > 0.5 ? .high : .medium,
+                businessValue: effectiveness > 0.5 ? BusinessImpact.high : BusinessImpact.medium,
                 createdAt: Date()
             )]
         }
@@ -686,13 +493,262 @@ struct MemoryConnectionCalculator {
                 "Identify most effective conversation topics",
                 "Create templates for successful coaching patterns"
             ],
-            businessValue: .high,
+            businessValue: BusinessImpact.high,
             createdAt: Date()
         )]
     }
     
-    // MARK: - Stub implementations for pattern detection methods
+    // MARK: - Original Helper Methods (need to be included)
     
+    private func calculateConnection(from sessionA: ExecutiveSession, to sessionB: ExecutiveSession) -> SessionConnection? {
+        var reasons: [ConnectionReason] = []
+        var totalScore: Double = 0
+        
+        // Time proximity check
+        let timeDifference = abs(sessionA.date.timeIntervalSince(sessionB.date))
+        let daysDifference = timeDifference / (24 * 60 * 60)
+        
+        guard daysDifference <= Double(maxTimeGapDays) else { return nil }
+        
+        // Calculate different types of connections
+        let attendeeScore = calculateAttendeeOverlapScore(sessionA: sessionA, sessionB: sessionB)
+        if attendeeScore.score > 0 {
+            reasons.append(attendeeScore.reason)
+            totalScore += attendeeScore.score * 0.3
+        }
+        
+        let topicScore = calculateTopicSimilarityScore(sessionA: sessionA, sessionB: sessionB)
+        if topicScore.score > keywordSimilarityThreshold {
+            reasons.append(topicScore.reason)
+            totalScore += topicScore.score * 0.4
+        }
+        
+        let actionScore = calculateActionItemConnectionScore(sessionA: sessionA, sessionB: sessionB)
+        if actionScore.score > 0 {
+            reasons.append(actionScore.reason)
+            totalScore += actionScore.score * 0.3
+        }
+        
+        guard totalScore >= minimumConnectionScore && !reasons.isEmpty else { return nil }
+        
+        let connectionType = determineConnectionType(reasons: reasons)
+        let strength = ConnectionStrength.from(score: totalScore)
+        
+        return SessionConnection(
+            sourceSessionId: sessionA.id,
+            targetSessionId: sessionB.id,
+            connectionType: connectionType,
+            strength: strength,
+            score: totalScore,
+            reasons: reasons
+        )
+    }
+    
+    private func calculateAttendeeOverlapScore(sessionA: ExecutiveSession, sessionB: ExecutiveSession) -> (score: Double, reason: ConnectionReason) {
+        let attendeesA = Set(sessionA.attendees)
+        let attendeesB = Set(sessionB.attendees)
+        let commonAttendees = attendeesA.intersection(attendeesB)
+        let totalUniqueAttendees = attendeesA.union(attendeesB).count
+        
+        guard !commonAttendees.isEmpty && totalUniqueAttendees > 0 else {
+            return (0, ConnectionReason(type: .sharedAttendees, description: "No shared attendees", confidence: 0))
+        }
+        
+        let score = Double(commonAttendees.count) / Double(totalUniqueAttendees)
+        let attendeeList = Array(commonAttendees).joined(separator: ", ")
+        
+        return (
+            score,
+            ConnectionReason(
+                type: .sharedAttendees,
+                description: "Shared attendees: \(attendeeList)",
+                confidence: score,
+                evidence: Array(commonAttendees)
+            )
+        )
+    }
+    
+    private func calculateTopicSimilarityScore(sessionA: ExecutiveSession, sessionB: ExecutiveSession) -> (score: Double, reason: ConnectionReason) {
+        // Extract keywords from session content
+        let keywordsA = extractKeywords(from: sessionA)
+        let keywordsB = extractKeywords(from: sessionB)
+        
+        let commonKeywords = Set(keywordsA).intersection(Set(keywordsB))
+        let totalKeywords = Set(keywordsA).union(Set(keywordsB)).count
+        
+        guard !commonKeywords.isEmpty && totalKeywords > 0 else {
+            return (0, ConnectionReason(type: .keywordSimilarity, description: "No common topics", confidence: 0))
+        }
+        
+        let score = Double(commonKeywords.count) / Double(totalKeywords)
+        
+        // Category matching bonus
+        let categoryBonus = sessionA.notes.contains { noteA in
+            sessionB.notes.contains { noteB in
+                noteA.category == noteB.category
+            }
+        } ? 0.1 : 0
+        
+        return (
+            score + categoryBonus,
+            ConnectionReason(
+                type: .keywordSimilarity,
+                description: "Common topics: \(Array(commonKeywords).prefix(3).joined(separator: ", "))",
+                confidence: score,
+                evidence: Array(commonKeywords)
+            )
+        )
+    }
+    
+    private func calculateActionItemConnectionScore(sessionA: ExecutiveSession, sessionB: ExecutiveSession) -> (score: Double, reason: ConnectionReason) {
+        let actionsA = sessionA.notes.flatMap { $0.actionItems }
+        let actionsB = sessionB.notes.flatMap { $0.actionItems }
+        
+        guard !actionsA.isEmpty || !actionsB.isEmpty else {
+            return (0, ConnectionReason(type: .actionItemLink, description: "No action items", confidence: 0))
+        }
+        
+        // Look for related action items (similar titles or descriptions)
+        var matchingActions = 0
+        for actionA in actionsA {
+            for actionB in actionsB {
+                let titleSimilarity = calculateTextSimilarity(actionA.title, actionB.title)
+                let descSimilarity = calculateTextSimilarity(actionA.description, actionB.description)
+                
+                if titleSimilarity > 0.5 || descSimilarity > 0.5 {
+                    matchingActions += 1
+                }
+            }
+        }
+        
+        let totalActions = actionsA.count + actionsB.count
+        let score = totalActions > 0 ? Double(matchingActions) / Double(totalActions) : 0
+        
+        return (
+            score,
+            ConnectionReason(
+                type: .actionItemLink,
+                description: "\(matchingActions) related action items found",
+                confidence: score,
+                evidence: ["Related actions: \(matchingActions)/\(totalActions)"]
+            )
+        )
+    }
+    
+    private func extractKeywords(from session: ExecutiveSession) -> [String] {
+        let allText = ([session.title] + session.notes.map { $0.content }).joined(separator: " ")
+        return extractBusinessKeywords(from: allText)
+    }
+    
+    private func extractBusinessKeywords(from content: String) -> [String] {
+        let businessTerms = [
+            "strategy", "revenue", "growth", "market", "customer", "product", "team",
+            "funding", "investment", "profit", "sales", "marketing", "operations",
+            "technology", "innovation", "competition", "partnership", "expansion",
+            "leadership", "management", "culture", "hiring", "retention", "performance"
+        ]
+        
+        let words = tokenize(content).map { $0.lowercased() }
+        return words.filter { word in
+            businessTerms.contains(word) || word.count > 5
+        }
+    }
+    
+    private func extractStrategicKeywords(from content: String) -> [String] {
+        let strategicTerms = [
+            "strategy", "vision", "mission", "goals", "objectives", "market", "competition",
+            "growth", "expansion", "innovation", "transformation", "disruption", "opportunity",
+            "positioning", "advantage", "revenue", "profit", "investment", "acquisition"
+        ]
+        
+        let words = tokenize(content).map { $0.lowercased() }
+        return words.filter { strategicTerms.contains($0) }
+    }
+    
+    private func tokenize(_ text: String) -> [String] {
+        return text.components(separatedBy: .whitespacesAndNewlines)
+            .flatMap { $0.components(separatedBy: .punctuationCharacters) }
+            .filter { !$0.isEmpty }
+    }
+    
+    private func calculateTextSimilarity(_ text1: String, _ text2: String) -> Double {
+        let words1 = Set(tokenize(text1.lowercased()))
+        let words2 = Set(tokenize(text2.lowercased()))
+        
+        let intersection = words1.intersection(words2)
+        let union = words1.union(words2)
+        
+        guard !union.isEmpty else { return 0 }
+        
+        return Double(intersection.count) / Double(union.count)
+    }
+    
+    private func determineConnectionType(reasons: [ConnectionReason]) -> ConnectionType {
+        if reasons.contains(where: { $0.type == .actionItemLink }) {
+            return .actionDependency
+        } else if reasons.contains(where: { $0.type == .sharedAttendees }) {
+            return .peopleNetwork
+        } else if reasons.contains(where: { $0.type == .keywordSimilarity || $0.type == .topicOverlap }) {
+            return .topicSimilarity
+        } else {
+            return .followUp
+        }
+    }
+    
+    private func buildCluster(startingFrom session: ExecutiveSession, sessions: [ExecutiveSession], connections: [SessionConnection]) -> SessionCluster {
+        var clusterSessions: Set<UUID> = [session.id]
+        var toProcess: [UUID] = [session.id]
+        
+        // Breadth-first search to find connected sessions
+        while !toProcess.isEmpty {
+            let currentSessionId = toProcess.removeFirst()
+            
+            let relatedConnections = connections.filter { connection in
+                (connection.sourceSessionId == currentSessionId || connection.targetSessionId == currentSessionId) &&
+                connection.strength.scoreRange.upperBound >= strongConnectionThreshold
+            }
+            
+            for connection in relatedConnections {
+                let otherSessionId = connection.sourceSessionId == currentSessionId ? connection.targetSessionId : connection.sourceSessionId
+                
+                if !clusterSessions.contains(otherSessionId) {
+                    clusterSessions.insert(otherSessionId)
+                    toProcess.append(otherSessionId)
+                }
+            }
+        }
+        
+        let clusterSessionObjects = sessions.filter { clusterSessions.contains($0.id) }
+        let averageDate = Date(timeIntervalSince1970: clusterSessionObjects.map { $0.date.timeIntervalSince1970 }.reduce(0, +) / Double(clusterSessionObjects.count))
+        
+        // Calculate cohesion based on connection strengths
+        let relevantConnections = connections.filter { connection in
+            clusterSessions.contains(connection.sourceSessionId) && clusterSessions.contains(connection.targetSessionId)
+        }
+        let averageConnectionStrength = relevantConnections.isEmpty ? 0 : relevantConnections.map { $0.score }.reduce(0, +) / Double(relevantConnections.count)
+        
+        // Extract dominant topics
+        let allKeywords = clusterSessionObjects.flatMap { extractKeywords(from: $0) }
+        let keywordCounts = Dictionary(grouping: allKeywords) { $0 }.mapValues { $0.count }
+        let dominantTopics = keywordCounts.sorted { $0.value > $1.value }.prefix(5).map { $0.key }
+        
+        // Extract key attendees
+        let allAttendees = clusterSessionObjects.flatMap { $0.attendees }
+        let attendeeCounts = Dictionary(grouping: allAttendees) { $0 }.mapValues { $0.count }
+        let keyAttendees = attendeeCounts.sorted { $0.value > $1.value }.prefix(5).map { $0.key }
+        
+        return SessionCluster(
+            name: "Cluster: \(dominantTopics.first ?? "Sessions")",
+            sessions: Array(clusterSessions),
+            centerOfMass: averageDate,
+            cohesion: averageConnectionStrength,
+            dominantTopics: Array(dominantTopics),
+            keyAttendees: Array(keyAttendees),
+            businessImpact: averageConnectionStrength > 0.8 ? .high : averageConnectionStrength > 0.6 ? .medium : .low
+        )
+    }
+    
+    // Stub implementations for pattern detection methods
     private func detectWeeklyStandupPattern(sessions: [ExecutiveSession]) -> [MemoryPattern] {
         return []
     }

@@ -1,17 +1,9 @@
 //
 //  ConversationHistoryView.swift
-//  Apprentice
-//
-//  Created by James Garmon on 8/26/25.
-//
-
-
-//
-//  ConversationHistoryView.swift
 //  Stitch Executive AI
 //
 //  Layer 8: Views - Conversation history display and management
-//  FIXED: Updated to use ConversationHistoryManager instead of SpeechConversationService
+//  FIXED: StatCard replaced with MyStatCard to resolve scope issue
 //
 
 import SwiftUI
@@ -74,10 +66,10 @@ struct ConversationHistoryView: View {
             totalTurns: conversationHistoryManager.conversationHistory.count,
             totalSessions: Set(conversationHistoryManager.conversationHistory.compactMap { $0.sessionId }).count,
             lastActivity: conversationHistoryManager.conversationHistory.last?.timestamp,
-            averageTurnsPerSession: 0.0, // Calculated in ConversationHistoryManager
+            averageTurnsPerSession: 0.0,
             firstConversation: conversationHistoryManager.conversationHistory.first?.timestamp,
-            conversationsThisWeek: 0, // Calculated in ConversationHistoryManager
-            conversationsToday: 0 // Calculated in ConversationHistoryManager
+            conversationsThisWeek: 0,
+            conversationsToday: 0
         )
     }
     
@@ -163,21 +155,21 @@ struct ConversationHistoryView: View {
     
     private func statsGrid(stats: ConversationStats) -> some View {
         LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 3), spacing: 16) {
-            StatCard(
+            MyStatCard(
                 title: "Total",
                 value: "\(stats.totalTurns)",
                 icon: "message",
                 color: .blue
             )
             
-            StatCard(
+            MyStatCard(
                 title: "Sessions",
                 value: "\(stats.totalSessions)",
                 icon: "bubble.left.and.bubble.right",
                 color: .green
             )
             
-            StatCard(
+            MyStatCard(
                 title: "Today",
                 value: "\(stats.conversationsToday)",
                 icon: "calendar",
@@ -374,7 +366,7 @@ struct ConversationTurnCard: View {
     }
 }
 
-struct StatCard: View {
+struct MyStatCard: View {
     let title: String
     let value: String
     let icon: String
@@ -402,22 +394,26 @@ struct StatCard: View {
     }
 }
 
-struct MyFilterChip: View {
-    let title: String
-    let isSelected: Bool
+// MARK: - GlassCard Component (if missing)
+
+struct MyGlassCard<Content: View>: View {
+    let content: Content
+    
+    init(@ViewBuilder content: () -> Content) {
+        self.content = content()
+    }
     
     var body: some View {
-        Text(title)
-            .font(.caption)
-            .fontWeight(.medium)
-            .foregroundColor(isSelected ? .white : .blue)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(isSelected ? .blue : .blue.opacity(0.2))
-            .clipShape(Capsule())
+        content
+            .background(.ultraThinMaterial)
+            .clipShape(RoundedRectangle(cornerRadius: 16))
             .overlay(
-                Capsule()
-                    .stroke(.blue.opacity(0.5), lineWidth: 1)
+                RoundedRectangle(cornerRadius: 16)
+                    .stroke(.white.opacity(0.2), lineWidth: 1)
             )
     }
+}
+
+#Preview {
+    ConversationHistoryView()
 }

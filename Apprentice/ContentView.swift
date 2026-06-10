@@ -76,16 +76,16 @@ struct ContentView: View {
                         selectedTab: $selectedTab
                     )
                     .tag(0)
-                    
+
                     SessionsListView()
                         .tag(1)
-                    
-                    RecordingView()
+
+                    ActiveRecordingView()
                         .tag(2)
-                    
+
                     BusinessIntelligenceDashboard()
                         .tag(3)
-                    
+
                     MemoryAnalysisView(
                         sessionManager: sessionManager,
                         memoryConnections: memoryConnections,
@@ -94,7 +94,7 @@ struct ContentView: View {
                         isAnalyzing: isAnalyzingMemory
                     )
                     .tag(4)
-                    
+
                     DocumentUploadView()
                         .environmentObject(sessionManager)
                         .tag(5)
@@ -118,7 +118,10 @@ struct ContentView: View {
     // MARK: - Setup Methods
     
     private func checkOnboardingStatus() {
-        showingProfileSetup = profileManager.founderProfile == nil || !profileManager.isOnboardingComplete
+        // Check if profile exists and onboarding is complete via UserDefaults
+        let hasProfile = profileManager.founderProfile != nil
+        let isOnboardingComplete = UserDefaults.standard.bool(forKey: "onboarding_completed")
+        showingProfileSetup = !hasProfile || !isOnboardingComplete
     }
     
     private func requestMicrophonePermission() {

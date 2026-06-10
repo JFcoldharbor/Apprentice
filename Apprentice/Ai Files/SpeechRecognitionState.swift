@@ -1,17 +1,9 @@
 //
 //  SpeechRecognitionState.swift
-//  Apprentice
-//
-//  Created by James Garmon on 8/26/25.
-//
-
-
-//
-//  SpeechRecognitionState.swift
 //  Stitch Executive AI
 //
 //  Enhanced with continuous conversation and feedback loop prevention
-//  ENHANCED: Added voice commands for interrupting and stopping conversations
+//  FIXED: Process captured speech on timeout instead of discarding it
 //
 
 import Foundation
@@ -102,12 +94,14 @@ class SpeechRecognitionService: NSObject, ObservableObject, SpeechRecognitionSer
     private var recognitionTask: SFSpeechRecognitionTask?
     private var inputNode: AVAudioInputNode?
     
-    // MARK: - Voice Activity Detection Configuration (Optimized for Speed)
+    // MARK: - Timing Configuration
     
-    private let timeoutInterval: TimeInterval = 30.0
-    private let silenceThreshold: TimeInterval = 1.5 // Reduced from 2.0 for faster response
-    private let minSpeechLength: Int = 10 // Reduced from 15 for faster processing
-    private let maxSpeechLength: Int = 300 // Reduced from 500 for faster responses
+    private let timeoutInterval: TimeInterval = 45.0 // Overall timeout
+    private let silenceThreshold: TimeInterval = 2.5 // Silence detection
+    private let minSpeechLength: Int = 3  // Minimum characters to process
+    private let maxSpeechLength: Int = 1000 // Prevent processing overly long rambling
+    
+    // MARK: - Timer Management
     
     private var timeoutTimer: Timer?
     private var silenceTimer: Timer?
@@ -118,236 +112,257 @@ class SpeechRecognitionService: NSObject, ObservableObject, SpeechRecognitionSer
     
     override init() {
         super.init()
-        setupSpeechRecognizer()
-        updatePermissionStatus()
+        speechRecognizer?.delegate = self
     }
+    
+    // MARK: - Public Interface
     
     func setSpeechService(_ service: SpeechConversationService) {
         self.speechService = service
-        
-        // CRITICAL: Set up TTS completion callback to prevent feedback loop
-        service.openAIVoice.onTTSCompleted = { [weak self] in
-            Task { @MainActor in
-                self?.resumeRecognition()
+    }
+    
+    func requestPermissions() async -> Bool {
+        return await withCheckedContinuation { continuation in
+            SFSpeechRecognizer.requestAuthorization { status in
+                Task { @MainActor in
+                    switch status {
+                    case .authorized:
+                        self.permissionStatus = .authorized
+                        continuation.resume(returning: true)
+                    case .denied:
+                        self.permissionStatus = .denied
+                        continuation.resume(returning: false)
+                    case .restricted:
+                        self.permissionStatus = .restricted
+                        continuation.resume(returning: false)
+                    case .notDetermined:
+                        self.permissionStatus = .notDetermined
+                        continuation.resume(returning: false)
+                    @unknown default:
+                        self.permissionStatus = .denied
+                        continuation.resume(returning: false)
+                    }
+                }
             }
         }
+    }
+    
+    // MARK: - Wake Word Listening (Optimized)
+    
+    func startWakeWordListening() {
+        print("🔍 [RECOGNITION] Starting wake word listening...")
+        isWakeWordListening = true
+        conversationActive = false
+        continuousMode = true
+        start()
+    }
+    
+    // MARK: - Continuous Conversation Mode
+    
+    func startContinuous(skipGreeting: Bool = false) {
+        print("🎙️ [RECOGNITION] Starting continuous mode without duplicate greeting")
+        continuousMode = true
+        conversationActive = true
+        isWakeWordListening = false
+        
+        start()
+    }
+    
+    // MARK: - Core Recognition Methods
+    
+    func start() {
+        guard !isListening else { return }
+        guard speechRecognizer?.isAvailable == true else {
+            print("❌ [RECOGNITION] Speech recognizer not available")
+            recognitionState = .failed(SpeechConversationError.speechRecognitionNotAvailable)
+            return
+        }
+        
+        // Clean up any existing resources
+        cleanupAudioEngine()
+        
+        do {
+            try startAudioEngine()
+            recognitionState = .listening
+            isListening = true
+            print("✅ [RECOGNITION] Started successfully")
+        } catch {
+            print("❌ [RECOGNITION] Failed to start: \(error)")
+            recognitionState = .failed(error)
+        }
+    }
+    
+    func stop() {
+        print("🛑 [RECOGNITION] Stopping...")
+        
+        isListening = false
+        continuousMode = false
+        conversationActive = false
+        isWakeWordListening = false
+        
+        stopAllTimers()
+        cleanupAudioEngine()
+        
+        recognitionState = .idle
+        clearCurrentSpeech()
+    }
+    
+    // MARK: - Audio Engine Setup
+    
+    private func startAudioEngine() throws {
+        let inputNode = audioEngine.inputNode
+        self.inputNode = inputNode
+        
+        let recordingFormat = inputNode.outputFormat(forBus: 0)
+        
+        recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
+        guard let recognitionRequest = recognitionRequest else {
+            throw SpeechConversationError.audioEngineError
+        }
+        
+        recognitionRequest.shouldReportPartialResults = true
+        recognitionRequest.taskHint = .dictation
+        recognitionRequest.requiresOnDeviceRecognition = false
+
+        // Remove any existing tap first — a second tap on the same bus throws
+        // 'nullptr == Tap()' and crashes the app.
+        inputNode.removeTap(onBus: 0)
+
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { buffer, _ in
+            recognitionRequest.append(buffer)
+        }
+        
+        audioEngine.prepare()
+        try audioEngine.start()
+        
+        recognitionTask = speechRecognizer?.recognitionTask(with: recognitionRequest) { [weak self] result, error in
+            Task { @MainActor in
+                self?.handleRecognitionResult(result: result, error: error)
+            }
+        }
+        
+        recognitionState = .listening
+    }
+    
+    // MARK: - Timer Management
+    
+    private func startTimeoutTimer() {
+        timeoutTimer?.invalidate()
+        timeoutTimer = Timer.scheduledTimer(withTimeInterval: timeoutInterval, repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                self?.handleTimeout()
+            }
+        }
+        print("Timeout timer started: \(timeoutInterval)s")
+    }
+    
+    // MARK: - FIXED: Process speech on timeout instead of discarding
+    
+    private func handleTimeout() {
+        print("⏰ [RECOGNITION] Recognition timeout")
+        
+        // CRITICAL FIX: Process any captured speech before timeout
+        let currentText = recognizedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        if !currentText.isEmpty && currentText.count >= minSpeechLength {
+            print("📝 [RECOGNITION] Processing captured speech on timeout: '\(currentText.prefix(50))...'")
+            processUserSpeech(currentText)
+            return
+        }
+        
+        if continuousMode {
+            // In continuous mode, just reset and keep listening
+            print("🔄 [RECOGNITION] Resetting for continuous mode")
+            clearCurrentSpeech()
+            startTimeoutTimer() // Restart timeout
+        } else {
+            recognitionState = .timeout
+            stop()
+        }
+    }
+    
+    private func stopAllTimers() {
+        timeoutTimer?.invalidate()
+        timeoutTimer = nil
+        silenceTimer?.invalidate()
+        silenceTimer = nil
+    }
+    
+    // MARK: - Audio Engine Management
+    
+    private func cleanupAudioEngine() {
+        print("🧹 [RECOGNITION] Cleaning up audio engine resources")
+        
+        // Stop recognition task
+        recognitionTask?.cancel()
+        recognitionTask = nil
+        
+        // Remove audio taps
+        if let inputNode = inputNode {
+            inputNode.removeTap(onBus: 0)
+        }
+        
+        // Stop audio engine
+        if audioEngine.isRunning {
+            audioEngine.stop()
+        }
+        
+        // End recognition request
+        recognitionRequest?.endAudio()
+        recognitionRequest = nil
+        
+        inputNode = nil
     }
     
     // MARK: - Wake Word Detection
     
     private func checkForWakeWord(_ text: String) -> Bool {
-        let lowercased = text.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
-        return wakeWords.contains { wakeWord in
-            lowercased.contains(wakeWord) || lowercased == wakeWord
-        }
+        let lowercaseText = text.lowercased()
+        return wakeWords.contains { lowercaseText.contains($0) }
     }
     
     private func handleWakeWordDetected(_ text: String) {
-        print("ðŸ‘‹ [RECOGNITION] Wake word detected: '\(text)'")
-        
-        guard !conversationActive else {
-            print("Conversation already active, ignoring wake word")
-            return
-        }
-        
-        conversationActive = true
+        print("👋 [RECOGNITION] Wake word detected: '\(text)'")
         
         Task {
-            await activateConversationMode()
+            guard let speechService = speechService else { return }
+            
+            // Switch to conversation mode
+            conversationActive = true
+            isWakeWordListening = false
+            
+            // Provide greeting
+            let greeting = generatePersonalizedGreeting()
+            try await speechService.speak(text: greeting)
+            
+            // Switch to continuous conversation mode after greeting
+            startContinuous(skipGreeting: true)
         }
     }
     
-    private func activateConversationMode() async {
-        guard let speechService = speechService else { return }
-        
-        print("ðŸš€ [RECOGNITION] Activating conversation mode")
-        
-        // Provide wake word acknowledgment
-        do {
-            try await speechService.speak(text: "Yes? I'm listening.")
-        } catch {
-            print("Failed to acknowledge wake word: \(error)")
-        }
-        
-        // Switch to full conversation mode
-        if !continuousMode {
-            await startContinuous()
-        }
+    private func generatePersonalizedGreeting() -> String {
+        let greetings = [
+            "Good to see you! What's on your mind?",
+            "Hello! How can I help you today?",
+            "I'm here. What would you like to discuss?",
+            "Ready to chat. What's happening?"
+        ]
+        return greetings.randomElement() ?? "Hello! How can I help?"
     }
     
-    func startWakeWordListening() {
-        print("ðŸ‘‚ [RECOGNITION] Starting wake word detection")
-        isWakeWordListening = true
-        conversationActive = false
-        
-        // Start lightweight listening for wake words only
-        startRecognition(continuousMode: false)
-    }
-    
-    // MARK: - Voice Command Detection
+    // MARK: - Command Detection
     
     private func checkForStopCommand(_ text: String) -> Bool {
-        let lowercased = text.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
-        return stopCommands.contains { command in
-            lowercased.contains(command) || lowercased == command
-        }
+        let lowercaseText = text.lowercased()
+        return stopCommands.contains { lowercaseText.contains($0) }
     }
     
     private func checkForInterruptCommand(_ text: String) -> Bool {
-        let lowercased = text.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
-        return interruptCommands.contains { command in
-            lowercased.contains(command) || lowercased == command
-        }
+        let lowercaseText = text.lowercased()
+        return interruptCommands.contains { lowercaseText.contains($0) }
     }
     
-    // MARK: - Public Interface
-    
-    func requestPermissions() async -> Bool {
-        print("Requesting permissions...")
-        
-        let speechPermission = await requestSpeechPermission()
-        let micPermission = await requestMicrophonePermission()
-        
-        let granted = speechPermission && micPermission
-        permissionStatus = granted ? .authorized : .denied
-        
-        print("Permissions granted: \(granted)")
-        return granted
-    }
-    
-    func start() {
-        startRecognition(continuousMode: false)
-    }
-    
-    func startContinuous() async {
-        guard let speechService = speechService else {
-            print("Speech service not set")
-            return
-        }
-        
-        continuousMode = true
-        
-        // CRITICAL: Set up TTS completion callback BEFORE starting recognition
-        speechService.openAIVoice.onTTSCompleted = { [weak self] in
-            Task { @MainActor in
-                self?.resumeRecognition()
-            }
-        }
-        
-        startRecognition(continuousMode: true)
-        
-        // Pause recognition for initial greeting
-        pauseRecognition()
-        
-        // Optional greeting
-        do {
-            try await speechService.speak(text: "I'm ready to help. Just speak naturally and I'll respond when you're finished. Say 'stop' or 'end chat' to finish our conversation. You can also say 'Hey Boss' anytime to start a new conversation.")
-            // TTS completion will automatically resume recognition
-        } catch {
-            print("Failed to play greeting: \(error)")
-            // Resume recognition even if greeting fails
-            resumeRecognition()
-        }
-    }
-    
-    func stop() {
-        print("Stopping recognition...")
-        
-        // Clean up all audio engine resources
-        cleanupAudioEngine()
-        
-        // Stop all timers
-        stopAllTimers()
-        
-        // Preserve final text before cleanup
-        if !recognizedText.isEmpty && finalRecognizedText.isEmpty {
-            finalRecognizedText = recognizedText
-            print("Preserved final text: \(finalRecognizedText)")
-        }
-        
-        // Update state
-        if recognitionState == .listening {
-            recognitionState = continuousMode ? .idle : .completed
-        }
-        
-        isListening = false
-        continuousMode = false
-        isProcessing = false
-        isPausedForTTS = false
-        isUserSpeaking = false
-        
-        print("Recognition stopped completely")
-    }
-    
-    // MARK: - Core Recognition Logic with Command Detection
-    
-    private func startRecognition(continuousMode: Bool) {
-        guard permissionStatus == .authorized else {
-            print("Permissions not granted")
-            recognitionState = .failed(SpeechRecognitionError.permissionDenied)
-            return
-        }
-        
-        guard !isListening else {
-            print("Already listening")
-            return
-        }
-        
-        // Reset state
-        recognizedText = ""
-        finalRecognizedText = ""
-        isUserSpeaking = false
-        speechStartTime = nil
-        lastSpeechTime = nil
-        
-        do {
-            // Setup audio session
-            let audioSession = AVAudioSession.sharedInstance()
-            try audioSession.setCategory(.playAndRecord, mode: .measurement, options: [.duckOthers, .defaultToSpeaker])
-            try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
-            
-            // Setup recognition request
-            recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
-            guard let recognitionRequest = recognitionRequest else {
-                throw SpeechRecognitionError.setupFailed("Failed to create recognition request")
-            }
-            
-            recognitionRequest.shouldReportPartialResults = true
-            recognitionRequest.requiresOnDeviceRecognition = false
-            
-            // Setup audio engine
-            inputNode = audioEngine.inputNode
-            let recordingFormat = inputNode?.outputFormat(forBus: 0)
-            
-            inputNode?.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { buffer, _ in
-                recognitionRequest.append(buffer)
-            }
-            
-            audioEngine.prepare()
-            try audioEngine.start()
-            
-            // Start recognition task with voice activity detection
-            recognitionTask = speechRecognizer?.recognitionTask(with: recognitionRequest) { [weak self] result, error in
-                Task { @MainActor in
-                    self?.handleRecognitionResult(result: result, error: error)
-                }
-            }
-            
-            recognitionState = .listening
-            isListening = true
-            
-            // Start timeout timer
-            startTimeoutTimer()
-            
-            print("Recognition started - waiting for voice activity")
-            
-        } catch {
-            print("Failed to start recognition: \(error)")
-            recognitionState = .failed(SpeechRecognitionError.setupFailed(error.localizedDescription))
-        }
-    }
-    
-    // MARK: - Voice Activity Detection with Wake Word and Command Processing
+    // MARK: - Recognition Result Handling
     
     private func handleRecognitionResult(result: SFSpeechRecognitionResult?, error: Error?) {
         // Don't process speech if we're paused for TTS
@@ -359,73 +374,57 @@ class SpeechRecognitionService: NSObject, ObservableObject, SpeechRecognitionSer
             if newText != recognizedText && !newText.isEmpty {
                 recognizedText = newText
                 speechConfidence = result.bestTranscription.segments.last?.confidence ?? 0.0
+                
+                // Track speech activity for voice activity detection
+                if !isUserSpeaking {
+                    isUserSpeaking = true
+                    speechStartTime = Date()
+                    print("🎙️ User started speaking: '\(newText.prefix(30))...'")
+                }
+                
                 lastSpeechTime = Date()
                 
-                // Priority 1: Check for wake word when not in conversation mode
-                if !conversationActive && checkForWakeWord(newText) {
+                // Check for wake words if in wake word listening mode
+                if isWakeWordListening && checkForWakeWord(newText) {
                     handleWakeWordDetected(newText)
                     return
                 }
                 
-                // Priority 2: Check for commands when in conversation mode
-                if conversationActive {
-                    if checkForInterruptCommand(newText) {
-                        handleInterruptCommand(newText)
-                        return
-                    }
-                    
-                    if checkForStopCommand(newText) {
-                        handleStopCommandDetected(newText)
-                        return
-                    }
-                }
-                
-                // Only process normal speech if conversation is active
-                if !conversationActive {
-                    // In wake word mode, ignore regular speech
-                    if isWakeWordListening {
-                        return
-                    }
-                    // If not in wake word mode and not conversation active, still return
-                    return
-                }
-                
-                // Track when user starts speaking
-                if !isUserSpeaking && newText.count > 3 {
-                    isUserSpeaking = true
-                    speechStartTime = Date()
-                    print("User started speaking: \(newText)")
-                }
-                
-                // Reset silence timer on new speech
+                // Reset silence timer whenever we get new speech
                 resetSilenceTimer()
             }
             
-            // Handle final result for non-continuous mode
-            if result.isFinal && !continuousMode {
-                finalRecognizedText = newText
-                print("Final result: \(finalRecognizedText)")
-                recognitionState = .completed
-                stop()
-                return
+            // Handle final results immediately for better responsiveness
+            if result.isFinal {
+                silenceTimer?.invalidate()
+                handleSilenceDetected()
             }
         }
         
+        // FIXED: Handle recognition errors without aggressive restart
         if let error = error {
             let nsError = error as NSError
-            // Ignore "no speech detected" errors in continuous mode - they're normal
-            if nsError.domain == "kAFAssistantErrorDomain" && nsError.code == 1110 && continuousMode {
+            
+            // Ignore common "no speech detected" errors - these are NORMAL
+            if nsError.domain == "kAFAssistantErrorDomain" && nsError.code == 1110 {
+                print("ℹ️ [RECOGNITION] No speech timeout (normal)")
+                // In continuous mode, just reset and continue - don't restart
+                if continuousMode {
+                    clearCurrentSpeech()
+                    startTimeoutTimer() // Reset timeout
+                }
                 return
             }
-            if nsError.domain != "kLSRErrorDomain" || nsError.code != 301 {
-                print("Recognition error: \(error)")
-                if !continuousMode {
-                    recognitionState = .failed(error)
-                    stop()
-                } else {
-                    restartRecognitionIfNeeded()
-                }
+            
+            // Ignore cancellation errors (these happen during normal operation)
+            if nsError.domain == "kLSRErrorDomain" && nsError.code == 301 {
+                print("ℹ️ [RECOGNITION] Task cancelled (normal)")
+                return
             }
+            
+            // For ANY other error, just stop - don't restart
+            print("❌ [RECOGNITION] Unhandled error, stopping: \(error)")
+            stop()
         }
     }
     
@@ -434,7 +433,7 @@ class SpeechRecognitionService: NSObject, ObservableObject, SpeechRecognitionSer
     private func handleInterruptCommand(_ text: String) {
         guard let speechService = speechService else { return }
         
-        print("ðŸ›‘ [RECOGNITION] Interrupt command detected: '\(text)'")
+        print("⚡ [RECOGNITION] Interrupt command detected: '\(text)'")
         
         Task {
             // Immediately stop any AI speech
@@ -451,7 +450,7 @@ class SpeechRecognitionService: NSObject, ObservableObject, SpeechRecognitionSer
     }
     
     private func handleStopCommandDetected(_ text: String) {
-        print("ðŸ›‘ [RECOGNITION] Stop command detected: '\(text)'")
+        print("⚡ [RECOGNITION] Stop command detected: '\(text)'")
         
         Task {
             let stopResponse = "Understood. I'm here whenever you need me."
@@ -511,7 +510,7 @@ class SpeechRecognitionService: NSObject, ObservableObject, SpeechRecognitionSer
             return
         }
         
-        // Check if we have meaningful speech
+        // FIXED: Lower minimum speech length for better responsiveness
         guard currentText.count >= minSpeechLength else {
             print("Speech too short, ignoring: '\(currentText)'")
             clearCurrentSpeech()
@@ -526,7 +525,7 @@ class SpeechRecognitionService: NSObject, ObservableObject, SpeechRecognitionSer
             return
         }
         
-        print("Silence detected, processing complete thought: '\(currentText)'")
+        print("🔇 [RECOGNITION] Silence detected, processing complete thought: '\(currentText.prefix(50))...'")
         processUserSpeech(currentText)
     }
     
@@ -561,12 +560,12 @@ class SpeechRecognitionService: NSObject, ObservableObject, SpeechRecognitionSer
         stopAudioEngineTemporarily()
         
         do {
-            print("Processing with AI: '\(text)'")
+            print("🤖 [RECOGNITION] Processing with AI: '\(text.prefix(50))...'")
             
             let aiResponse = try await speechService.processUserInput(text)
             
             if !aiResponse.isEmpty {
-                print("AI responding: '\(aiResponse.prefix(50))...'")
+                print("🗣️ [RECOGNITION] AI responding: '\(aiResponse.prefix(50))...'")
                 
                 // Ensure recognition is completely paused before TTS
                 ensureRecognitionPaused()
@@ -578,7 +577,7 @@ class SpeechRecognitionService: NSObject, ObservableObject, SpeechRecognitionSer
             }
             
         } catch {
-            print("AI processing failed: \(error)")
+            print("❌ [RECOGNITION] AI processing failed: \(error)")
             resumeRecognition()
         }
         
@@ -588,7 +587,7 @@ class SpeechRecognitionService: NSObject, ObservableObject, SpeechRecognitionSer
     // MARK: - Optimized TTS Coordination (No Engine Destruction)
     
     private func pauseRecognition() {
-        print("Pausing recognition for TTS")
+        print("⏸️ [RECOGNITION] Pausing recognition for TTS")
         isPausedForTTS = true
         
         // Stop all timers immediately
@@ -607,7 +606,7 @@ class SpeechRecognitionService: NSObject, ObservableObject, SpeechRecognitionSer
     
     private func stopAudioEngineTemporarily() {
         // Lightweight pause: just remove tap, keep engine running
-        print("Pausing audio tap for TTS")
+        print("🎤 [RECOGNITION] Pausing audio tap for TTS")
         
         // Remove tap but keep engine alive
         if let inputNode = inputNode {
@@ -633,15 +632,15 @@ class SpeechRecognitionService: NSObject, ObservableObject, SpeechRecognitionSer
         if let task = recognitionTask {
             task.cancel()
             recognitionTask = nil
-            print("Recognition task cancelled for TTS")
+            print("🛑 [RECOGNITION] Recognition task cancelled for TTS")
         }
     }
     
     private func resumeRecognition() {
-        print("Resuming recognition after TTS")
+        print("▶️ [RECOGNITION] Resuming recognition after TTS")
         
         guard continuousMode else {
-            print("Not in continuous mode, not resuming")
+            print("❌ [RECOGNITION] Not in continuous mode, not resuming")
             return
         }
         
@@ -651,269 +650,22 @@ class SpeechRecognitionService: NSObject, ObservableObject, SpeechRecognitionSer
         // Resume with minimal delay
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
             if self.continuousMode {
-                // Check if audio engine is still running (it should be)
+                // Check if audio engine is still running
                 if !self.audioEngine.isRunning {
+                    print("🔄 [RECOGNITION] Audio engine stopped, restarting for continuous mode")
+                    self.start()
+                } else {
+                    print("✅ [RECOGNITION] Recognition resumed efficiently")
+                    // Just restart the recognition components
                     do {
-                        // Only restart if engine actually stopped
-                        try self.audioEngine.start()
-                        print("Audio engine restarted")
+                        try self.startAudioEngine()
+                        self.startTimeoutTimer()
                     } catch {
-                        print("Failed to restart audio engine: \(error)")
-                        self.restartRecognitionIfNeeded()
-                        return
+                        print("❌ [RECOGNITION] Failed to resume: \(error)")
+                        // Fallback: full restart
+                        self.start()
                     }
                 }
-                
-                do {
-                    try self.resumeAudioTap()
-                    self.startTimeoutTimer()
-                    print("Recognition resumed efficiently")
-                } catch {
-                    print("Failed to resume audio tap: \(error)")
-                    self.restartRecognitionIfNeeded()
-                }
-            }
-        }
-    }
-    
-    private func resumeAudioTap() throws {
-        // Ensure any existing tap is removed first
-        if let inputNode = inputNode {
-            inputNode.removeTap(onBus: 0)
-        }
-        
-        // Create new recognition request
-        recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
-        guard let recognitionRequest = recognitionRequest else {
-            throw SpeechRecognitionError.setupFailed("Failed to create recognition request")
-        }
-        
-        recognitionRequest.shouldReportPartialResults = true
-        recognitionRequest.requiresOnDeviceRecognition = false
-        
-        // Reinstall tap on existing audio engine
-        guard let inputNode = inputNode else {
-            throw SpeechRecognitionError.setupFailed("No input node available")
-        }
-        
-        let inputFormat = inputNode.outputFormat(forBus: 0)
-        
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { [weak self] buffer, _ in
-            guard let self = self, !self.isPausedForTTS else { return }
-            self.recognitionRequest?.append(buffer)
-        }
-        
-        // Create new recognition task
-        recognitionTask = speechRecognizer?.recognitionTask(with: recognitionRequest) { [weak self] result, error in
-            Task { @MainActor in
-                self?.handleRecognitionResult(result: result, error: error)
-            }
-        }
-        
-        recognitionState = .listening
-        isListening = true
-        print("Audio tap resumed without engine restart")
-    }
-    
-    // MARK: - Audio Engine Cleanup (Only for full stop)
-    
-    private func cleanupAudioEngine() {
-        print("Cleaning up audio engine")
-        
-        // Cancel any existing recognition task
-        recognitionTask?.cancel()
-        recognitionTask = nil
-        
-        // End any existing recognition request
-        recognitionRequest?.endAudio()
-        recognitionRequest = nil
-        
-        // Stop audio engine and remove all taps
-        if audioEngine.isRunning {
-            audioEngine.stop()
-        }
-        
-        // CRITICAL: Remove tap before resetting to prevent crash
-        if let inputNode = inputNode {
-            inputNode.removeTap(onBus: 0)
-        }
-        
-        // Reset the entire audio engine to clear all state
-        audioEngine.reset()
-        
-        print("Audio engine cleaned up")
-    }
-    
-    // MARK: - Timer Management
-    
-    private func startTimeoutTimer() {
-        // Stop any existing timer first
-        timeoutTimer?.invalidate()
-        
-        // In continuous mode, use a longer timeout for better user experience
-        let timeout = continuousMode ? 45.0 : timeoutInterval
-        
-        timeoutTimer = Timer.scheduledTimer(withTimeInterval: timeout, repeats: false) { [weak self] _ in
-            Task { @MainActor in
-                self?.handleTimeout()
-            }
-        }
-        
-        print("Timeout timer started: \(timeout)s")
-    }
-    
-    private func stopAllTimers() {
-        timeoutTimer?.invalidate()
-        timeoutTimer = nil
-        silenceTimer?.invalidate()
-        silenceTimer = nil
-    }
-    
-    private func handleTimeout() {
-        print("Recognition timeout")
-        
-        if continuousMode {
-            // In continuous mode, timeout means extended silence - just restart recognition
-            print("Restarting recognition after timeout in continuous mode")
-            
-            // Reset state and restart recognition
-            clearCurrentSpeech()
-            
-            // Restart recognition engine
-            if !audioEngine.isRunning {
-                do {
-                    try restartRecognitionEngine()
-                    print("Recognition restarted after timeout")
-                } catch {
-                    print("Failed to restart after timeout: \(error)")
-                    restartRecognitionIfNeeded()
-                }
-            } else {
-                // Just restart the timeout timer
-                startTimeoutTimer()
-                print("Recognition timeout timer restarted")
-            }
-        } else {
-            if !recognizedText.isEmpty {
-                finalRecognizedText = recognizedText
-                recognitionState = .completed
-            } else {
-                recognitionState = .timeout
-            }
-            stop()
-        }
-    }
-    
-    private func restartRecognitionIfNeeded() {
-        guard continuousMode else { return }
-        
-        print("Restarting recognition due to interruption")
-        
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-            if self.continuousMode && !self.isPausedForTTS {
-                do {
-                    try self.restartRecognitionEngine()
-                    print("Recognition restarted successfully")
-                } catch {
-                    print("Recognition restart failed: \(error)")
-                    // Try again after a longer delay
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-                        if self.continuousMode && !self.isPausedForTTS {
-                            self.restartRecognitionIfNeeded()
-                        }
-                    }
-                }
-            }
-        }
-    }
-    
-    private func restartRecognitionEngine() throws {
-        // CRITICAL: Completely clean up existing taps and engine state first
-        cleanupAudioEngine()
-        
-        // Configure audio session for recording with proper sample rate
-        let audioSession = AVAudioSession.sharedInstance()
-        try audioSession.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetooth])
-        try audioSession.setActive(true, options: [])
-        
-        // Create new recognition request
-        recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
-        guard let recognitionRequest = recognitionRequest else {
-            throw SpeechRecognitionError.setupFailed("Failed to create recognition request")
-        }
-        
-        recognitionRequest.shouldReportPartialResults = true
-        recognitionRequest.requiresOnDeviceRecognition = false
-        
-        // Setup audio engine with proper format handling
-        inputNode = audioEngine.inputNode
-        
-        // CRITICAL: Use the hardware's native format to prevent format mismatch
-        let inputFormat = inputNode!.outputFormat(forBus: 0)
-        print("Input format: \(inputFormat)")
-        
-        // Install tap with the native format - ensure no existing tap
-        inputNode?.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { [weak self] buffer, _ in
-            guard let self = self, !self.isPausedForTTS else { return }
-            self.recognitionRequest?.append(buffer)
-        }
-        
-        // Prepare and start the engine
-        audioEngine.prepare()
-        try audioEngine.start()
-        
-        print("Audio engine restarted with format: \(inputFormat)")
-        
-        // Start recognition task with voice activity detection
-        recognitionTask = speechRecognizer?.recognitionTask(with: recognitionRequest) { [weak self] result, error in
-            Task { @MainActor in
-                self?.handleRecognitionResult(result: result, error: error)
-            }
-        }
-        
-        recognitionState = .listening
-        isListening = true
-    }
-    
-    // MARK: - Setup and Permissions
-    
-    private func setupSpeechRecognizer() {
-        speechRecognizer?.delegate = self
-        guard speechRecognizer?.isAvailable == true else {
-            print("Speech recognizer not available")
-            recognitionState = .failed(SpeechRecognitionError.unavailable)
-            return
-        }
-    }
-    
-    private func updatePermissionStatus() {
-        let speechStatus = SFSpeechRecognizer.authorizationStatus()
-        let micStatus = AVAudioSession.sharedInstance().recordPermission
-        
-        switch (speechStatus, micStatus) {
-        case (.authorized, .granted):
-            permissionStatus = .authorized
-        case (.denied, _), (_, .denied):
-            permissionStatus = .denied
-        case (.restricted, _), (_, .undetermined):
-            permissionStatus = .restricted
-        default:
-            permissionStatus = .notDetermined
-        }
-    }
-    
-    private func requestSpeechPermission() async -> Bool {
-        await withCheckedContinuation { continuation in
-            SFSpeechRecognizer.requestAuthorization { status in
-                continuation.resume(returning: status == .authorized)
-            }
-        }
-    }
-    
-    private func requestMicrophonePermission() async -> Bool {
-        await withCheckedContinuation { continuation in
-            AVAudioSession.sharedInstance().requestRecordPermission { granted in
-                continuation.resume(returning: granted)
             }
         }
     }
@@ -922,45 +674,10 @@ class SpeechRecognitionService: NSObject, ObservableObject, SpeechRecognitionSer
 // MARK: - SFSpeechRecognizerDelegate
 
 extension SpeechRecognitionService: SFSpeechRecognizerDelegate {
-    nonisolated func speechRecognizer(_ speechRecognizer: SFSpeechRecognizer, availabilityDidChange available: Bool) {
-        Task { @MainActor in
-            if !available && (recognitionState == .listening || continuousMode) {
-                print("Speech recognizer became unavailable")
-                if continuousMode {
-                    restartRecognitionIfNeeded()
-                } else {
-                    recognitionState = .failed(SpeechRecognitionError.unavailable)
-                    stop()
-                }
-            }
-        }
-    }
-}
-
-// MARK: - Speech Recognition Errors
-
-enum SpeechRecognitionError: Error, LocalizedError {
-    case permissionDenied
-    case unavailable
-    case timeout
-    case setupFailed(String)
-    case audioSessionFailed
-    case networkError
-    
-    var errorDescription: String? {
-        switch self {
-        case .permissionDenied:
-            return "Microphone and speech recognition permissions are required"
-        case .unavailable:
-            return "Speech recognition is not available on this device"
-        case .timeout:
-            return "Speech recognition timed out"
-        case .setupFailed(let reason):
-            return "Speech recognition setup failed: \(reason)"
-        case .audioSessionFailed:
-            return "Audio session configuration failed"
-        case .networkError:
-            return "Network connection required for speech recognition"
+    func speechRecognizer(_ speechRecognizer: SFSpeechRecognizer, availabilityDidChange available: Bool) {
+        print("Speech recognizer availability changed: \(available)")
+        if !available && isListening {
+            stop()
         }
     }
 }

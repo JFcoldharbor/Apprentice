@@ -581,6 +581,13 @@ struct SessionRowWithMemory: View {
         case .oneOnOne: return .orange
         case .boardMeeting: return .red
         case .coaching: return .cyan
+        case .strategicPlanning: return .indigo
+        case .allHands: return .teal
+        case .interview: return .pink
+        case .vendor: return .brown
+        case .weekly: return .mint
+        case .problemSolving: return .yellow
+        case .goalSetting: return .red
         }
     }
     

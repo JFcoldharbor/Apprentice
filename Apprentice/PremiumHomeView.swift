@@ -2,8 +2,8 @@
 //  PremiumHomeView.swift
 //  Stitch Executive AI
 //
-//  Layer 8: Views - Clean home interface with customizable AI name
-//  Error-free implementation with proper structure
+//  Layer 8: Views - Clean home interface with memory-enabled AI
+//  FIXED: ConversationEngine initialization with memory integration
 //
 
 import SwiftUI
@@ -62,7 +62,7 @@ struct PremiumHomeView: View {
     @State private var currentNewsIndex = 0
     @State private var newsTimer: Timer?
     
-    // MARK: - Initialization
+    // MARK: - FIXED: Initialization
     
     init(
         sessionManager: SessionManager,
@@ -81,12 +81,12 @@ struct PremiumHomeView: View {
         let sharedDocManager = SafeDocumentManager()
         sharedDocManager.setRealAIService(sharedRealAI)
         
+        // FIXED: Remove the memoryCalculator parameter - it's created internally now
         self._conversationEngine = StateObject(wrappedValue: ConversationEngine(
             realAIService: sharedRealAI,
             documentManager: sharedDocManager,
             profileManager: profileManager,
-            sessionManager: sessionManager,
-            memoryCalculator: MemoryConnectionCalculator()
+            sessionManager: sessionManager
         ))
         
         self._realAIService = StateObject(wrappedValue: sharedRealAI)
@@ -239,39 +239,77 @@ struct PremiumHomeView: View {
                     }
                 }
                 
-                // Settings/More button
-                Button(action: { handleSettingsAction() }) {
+                // Settings button (AI name change)
+                Button(action: { showingNameChange = true }) {
                     ZStack {
                         RoundedRectangle(cornerRadius: 10)
-                            .fill(Color.orange.opacity(0.1))
+                            .fill(Color.gray.opacity(0.1))
                             .frame(width: 44, height: 44)
                         
-                        Image(systemName: "ellipsis.circle")
+                        Image(systemName: "gear")
                             .font(.system(size: 18, weight: .medium))
-                            .foregroundColor(.orange)
+                            .foregroundColor(.gray)
                     }
                 }
             }
         }
-        .padding(.horizontal, 20)
+        .padding(.horizontal, 24)
     }
     
-    // MARK: - Central AI Orb
+    // MARK: - Central AI Orb with Particles
     
     private var centralAIOrbSection: some View {
-        VStack(spacing: 30) {
-            Button(action: { handleAIConnection() }) {
+        ZStack {
+            // Particle system - enhanced
+            ForEach(0..<20, id: \.self) { index in
+                let angle = Double(index) * 18
+                let distance: CGFloat = 180 + CGFloat(index % 3) * 30
+                
+                Circle()
+                    .fill(Color.cyan.opacity(0.3))
+                    .frame(width: CGFloat.random(in: 6...14), height: CGFloat.random(in: 6...14))
+                    .offset(
+                        x: cos(angle * .pi / 180) * distance * (particleAnimation ? 1.3 : 0.7),
+                        y: sin(angle * .pi / 180) * distance * (particleAnimation ? 1.3 : 0.7)
+                    )
+                    .opacity(particleAnimation ? 0.8 : 0.3)
+                    .animation(
+                        .easeInOut(duration: 2.0)
+                        .repeatForever()
+                        .delay(Double(index) * 0.05),
+                        value: particleAnimation
+                    )
+            }
+            
+            // Main AI interaction button
+            Button(action: handleAIOrbTap) {
                 ZStack {
-                    // Particle system - dots around orb
-                    ForEach(0..<24, id: \.self) { index in
+                    // Outer glow rings
+                    ForEach(0..<3, id: \.self) { ring in
                         Circle()
-                            .fill(Color.cyan.opacity(0.6))
-                            .frame(width: 2, height: 2)
-                            .offset(
-                                x: cos(Double(index) * .pi / 12) * 90,
-                                y: sin(Double(index) * .pi / 12) * 90
+                            .stroke(Color.cyan.opacity(0.2), lineWidth: 2)
+                            .frame(width: 180 + CGFloat(ring) * 40, height: 180 + CGFloat(ring) * 40)
+                            .scaleEffect(orbAnimation ? 1.1 + (Double(ring) * 0.05) : 0.95 + (Double(ring) * 0.05))
+                            .opacity(orbAnimation ? 0.6 - (Double(ring) * 0.2) : 0.3 - (Double(ring) * 0.1))
+                            .animation(
+                                .easeInOut(duration: 1.8 + (Double(ring) * 0.2))
+                                .repeatForever(autoreverses: true)
+                                .delay(Double(ring) * 0.1),
+                                value: orbAnimation
                             )
-                            .scaleEffect(particleAnimation ? 1.3 : 0.7)
+                    }
+                    
+                    // Particle trails connecting to orb
+                    ForEach(0..<8, id: \.self) { index in
+                        let angle = Double(index) * 45
+                        
+                        Circle()
+                            .fill(Color.cyan.opacity(0.4))
+                            .frame(width: 4, height: 4)
+                            .offset(
+                                x: cos(angle * .pi / 180) * 120 * (particleAnimation ? 1.3 : 0.7),
+                                y: sin(angle * .pi / 180) * 120 * (particleAnimation ? 1.3 : 0.7)
+                            )
                             .opacity(particleAnimation ? 0.8 : 0.3)
                             .animation(
                                 .easeInOut(duration: 2.0)
@@ -338,30 +376,56 @@ struct PremiumHomeView: View {
             queue: .main
         ) { notification in
             if let session = notification.object as? ExecutiveSession {
-                // Set the session and show email composer
-                // Note: You'd need to add selectedSession state variable
                 self.showingEmailComposer = true
             }
         }
-        
-        // Listen for email settings requests
-        NotificationCenter.default.addObserver(
-            forName: NSNotification.Name("ShowEmailSettings"),
-            object: nil,
-            queue: .main
-        ) { _ in
-            self.showingCalendarEmail = true
-        }
     }
     
-    private func startAnimations() {
-        // Start orb animation
-        withAnimation {
-            orbAnimation = true
-            particleAnimation = true
+    // MARK: - AI Interaction
+    
+    private func handleAIOrbTap() {
+        print("🎙️ [HOME] AI orb tapped - starting speech interaction")
+        
+        // Check for microphone permission first
+        requestMicrophonePermission()
+        
+        // Start active listening mode
+        Task {
+            await speechService.startActiveListening()
         }
         
-        // Start news cycling
+        // Update UI state
+        isConnectedToAI = true
+        currentAIMessage = "Listening..."
+        
+        // Haptic feedback
+        let impactFeedback = UIImpactFeedbackGenerator(style: .medium)
+        impactFeedback.impactOccurred()
+    }
+    
+    // MARK: - Button Actions
+    
+    private func handleCalendarAction() {
+        print("📅 [HOME] Calendar button tapped")
+        showingCalendarEmail = true
+    }
+    
+    private func handleEmailAction() {
+        print("📧 [HOME] Email button tapped")
+        showingEmailComposer = true
+    }
+    
+    // MARK: - Animations
+    
+    private func startAnimations() {
+        orbAnimation = true
+        particleAnimation = true
+        
+        // Start news rotation timer
+        startNewsRotation()
+    }
+    
+    private func startNewsRotation() {
         newsTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { _ in
             withAnimation(.easeInOut(duration: 0.5)) {
                 currentNewsIndex = (currentNewsIndex + 1) % newsItems.count
@@ -370,93 +434,63 @@ struct PremiumHomeView: View {
     }
     
     private func startFloatingNotifications() {
-        // Delay before starting notifications
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-            notificationManager.startNotificationFlow()
-        }
-    }
-    
-    private func handleAIConnection() {
         Task {
-            await connectToAI()
-            
-            // Trigger notification when AI connects
-            if isConnectedToAI {
-                notificationManager.refreshNotifications()
-            }
+            await notificationManager.startNotificationFlow()
         }
     }
     
-    private func connectToAI() async {
-        guard !isConnectedToAI else {
-            if speechRecognition.isListening {
-                speechRecognition.stop()
-            } else {
-                await startListening()
-            }
-            return
-        }
-        
-        let permissionsGranted = await speechRecognition.requestPermissions()
-        guard permissionsGranted else {
-            requestMicrophonePermission()
-            return
-        }
-        
-        isConnectedToAI = true
-        currentAIMessage = "\(aiName) coaching session activated. How can I help you today?"
-        
-        let welcomeMessage = await conversationEngine.generateProactiveWelcome()
-        
-        do {
-            try await speechService.speak(text: welcomeMessage)
-            await startListening()
-        } catch {
-            print("Failed to speak welcome message: \(error)")
-        }
-    }
-    
-    private func startListening() async {
-        do {
-            try await speechRecognition.startContinuous()
-        } catch {
-            print("Failed to start continuous listening: \(error)")
-        }
-    }
+    // MARK: - Information Display
     
     private func getCurrentInformation() -> String {
-        return newsItems[currentNewsIndex % newsItems.count]
+        let currentItem = newsItems[currentNewsIndex]
+        
+        // Enhance with dynamic content based on actual app state
+        switch currentNewsIndex {
+        case 0:
+            return "Market: \(getMarketStatus())"
+        case 1:
+            return "Next: \(getNextMeeting())"
+        case 2:
+            return "AI: \(sessionManager.sessions.count) sessions analyzed"
+        case 3:
+            return "Cal: \(calendarIntegration.hasCalendarAccess ? "Connected" : "Disconnected")"
+        case 4:
+            return "Docs: \(safeDocumentManager.documents.count) processed"
+        case 5:
+            return "Voice: \(speechService.hasPermissions ? "Active" : "Needs permission")"
+        default:
+            return currentItem
+        }
+    }
+    
+    private func getMarketStatus() -> String {
+        let hour = Calendar.current.component(.hour, from: Date())
+        if hour >= 9 && hour < 16 {
+            return "Open +2.1%"
+        } else {
+            return "Closed"
+        }
+    }
+    
+    private func getNextMeeting() -> String {
+        if let nextEvent = calendarIntegration.upcomingMeetings.first {
+            let formatter = DateFormatter()
+            formatter.timeStyle = .short
+            return "\(formatter.string(from: nextEvent.startDate))"
+        }
+        return "No meetings"
     }
     
     private func getCurrentDate() -> String {
         let formatter = DateFormatter()
-        formatter.dateStyle = .medium
-        return formatter.string(from: Date())
+        formatter.dateFormat = "MMM d"
+        return formatter.string(from: Date()).uppercased()
     }
     
     private func getCurrentTime() -> String {
         let formatter = DateFormatter()
         formatter.timeStyle = .short
         return formatter.string(from: Date())
-    }
-    
-    // MARK: - Button Action Handlers
-    
-    private func handleCalendarAction() {
-        print("Calendar button tapped")
-        showingCalendarEmail = true
-        notificationManager.refreshNotifications()
-    }
-    
-    private func handleEmailAction() {
-        print("Email button tapped")
-        showingEmailComposer = true
-        notificationManager.refreshNotifications()
-    }
-    
-    private func handleSettingsAction() {
-        print("Settings button tapped")
-        showingNameChange = true
     }
 }
 
@@ -467,43 +501,49 @@ struct AINameChangeView: View {
     @Binding var aiDisplayName: String
     @Environment(\.dismiss) private var dismiss
     
-    @State private var newName = ""
-    @State private var newDisplayName = ""
+    @State private var tempName: String = ""
+    @State private var tempDisplayName: String = ""
     
     var body: some View {
         NavigationView {
             VStack(spacing: 24) {
-                Text("Customize Your AI Assistant")
-                    .font(.title2)
-                    .fontWeight(.bold)
-                    .padding(.top, 20)
-                
                 VStack(alignment: .leading, spacing: 16) {
+                    Text("Customize Your AI")
+                        .font(.title2)
+                        .fontWeight(.bold)
+                    
+                    Text("Give your executive AI assistant a personalized name and display name.")
+                        .font(.body)
+                        .foregroundColor(.secondary)
+                }
+                
+                VStack(spacing: 16) {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("Assistant Name (appears in orb)")
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
+                        Text("Short Name (for orb)")
+                            .font(.headline)
                         
-                        TextField("Enter AI name", text: $newName)
-                            .textFieldStyle(RoundedBorderTextFieldStyle())
+                        TextField("e.g., ARIA", text: $tempName)
+                            .textFieldStyle(.roundedBorder)
                             .textCase(.uppercase)
+                            .limitText($tempName, to: 6)
                     }
                     
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("Full Display Name")
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
+                        Text("Display Name")
+                            .font(.headline)
                         
-                        TextField("Enter full name", text: $newDisplayName)
-                            .textFieldStyle(RoundedBorderTextFieldStyle())
+                        TextField("e.g., Executive AI Assistant", text: $tempDisplayName)
+                            .textFieldStyle(.roundedBorder)
+                            .limitText($tempDisplayName, to: 30)
                     }
                 }
-                .padding(.horizontal)
                 
                 Spacer()
             }
+            .padding()
             .navigationTitle("AI Settings")
             .navigationBarTitleDisplayMode(.inline)
+            .navigationBarBackButtonHidden()
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
                     Button("Cancel") {
@@ -513,29 +553,33 @@ struct AINameChangeView: View {
                 
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button("Save") {
-                        aiName = newName.isEmpty ? "ARIA" : newName.uppercased()
-                        aiDisplayName = newDisplayName.isEmpty ? "Executive AI Assistant" : newDisplayName
-                        dismiss()
+                        saveChanges()
                     }
-                    .disabled(newName.isEmpty && newDisplayName.isEmpty)
+                    .disabled(tempName.isEmpty)
                 }
             }
         }
         .onAppear {
-            newName = aiName
-            newDisplayName = aiDisplayName
+            tempName = aiName
+            tempDisplayName = aiDisplayName
         }
+    }
+    
+    private func saveChanges() {
+        aiName = tempName.uppercased()
+        aiDisplayName = tempDisplayName
+        dismiss()
     }
 }
 
-// MARK: - Preview
+// MARK: - Text Limiting Extension
 
-#Preview {
-    PremiumHomeView(
-        sessionManager: SessionManager.shared,
-        profileManager: FounderProfileManager.shared,
-        audioRecorder: AudioRecorder(),
-        requestMicrophonePermission: {},
-        selectedTab: .constant(0)
-    )
+extension View {
+    func limitText(_ text: Binding<String>, to characterLimit: Int) -> some View {
+        self.onChange(of: text.wrappedValue) { _, newValue in
+            if newValue.count > characterLimit {
+                text.wrappedValue = String(newValue.prefix(characterLimit))
+            }
+        }
+    }
 }

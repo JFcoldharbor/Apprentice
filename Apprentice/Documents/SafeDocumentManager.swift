@@ -1,426 +1,402 @@
 //
 //  SafeDocumentManager.swift
-//  Stitch Executive AI
+//  Apprentice
 //
-//  ENHANCED: Document upload with RAG vector embedding integration
-//  UPDATED: Now stores documents as searchable embeddings for Claude-like recall
+//  Layer 4: Core Services - Complete document management with RAG
+//  FIXED: UTType issues and improved error handling
 //
 
 import Foundation
-import UIKit
+import SwiftUI
 import PDFKit
+import UniformTypeIdentifiers
 
 @MainActor
 class SafeDocumentManager: ObservableObject {
     
+    // MARK: - Published Properties
+    
     @Published var documents: [ProcessedDocument] = []
     @Published var isProcessing = false
-    @Published var processingProgress: Double = 0.0
-    @Published var lastProcessedDocument: ProcessedDocument?
+    @Published var processingProgress = 0.0
+    @Published var lastError: String?
+    @Published var smartChunks: [SmartDocumentChunk] = []
     
-    // MARK: - RAG Integration (Shared Instance)
+    // MARK: - Private Properties
     
+    private let documentsDirectory: URL
     private var realAIService: RealAIService?
     private var speechService: SpeechConversationService?
     private let apiKey = Config.OpenAI.apiKey
+    private let maxChunkSize = 1500
+    private let chunkOverlap = 200
+    private let maxFileSize: Int64 = 50 * 1024 * 1024 // 50MB
+    
+    // MARK: - Initialization
+    
+    init(realAIService: RealAIService? = nil, speechService: SpeechConversationService? = nil) {
+        self.realAIService = realAIService
+        self.speechService = speechService
+        
+        // Documents directory setup
+        let fileManager = FileManager.default
+        self.documentsDirectory = fileManager.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("ProcessedDocuments")
+        
+        createDirectoryIfNeeded()
+        loadDocuments()
+        
+        print("📄 [DOC] SafeDocumentManager initialized - \(documents.count) documents loaded")
+    }
+    
+    // MARK: - Service Configuration Methods
     
     func setRealAIService(_ service: RealAIService) {
         self.realAIService = service
-    }
-    
-    struct ProcessedDocument: Identifiable, Codable {
-        let id = UUID()
-        let title: String
-        let originalName: String
-        let fileURL: URL
-        let uploadDate: Date
-        let fileSize: Int64
-        let extractedText: String?
-        let businessInsights: [String]
-        let actionItems: [String]
-        let isAnalyzed: Bool
-        let hasEmbedding: Bool // NEW: Track if document has vector embedding
-        
-        init(title: String, originalName: String, fileURL: URL, fileSize: Int64, extractedText: String? = nil, businessInsights: [String] = [], actionItems: [String] = [], hasEmbedding: Bool = false) {
-            self.title = title
-            self.originalName = originalName
-            self.fileURL = fileURL
-            self.uploadDate = Date()
-            self.fileSize = fileSize
-            self.extractedText = extractedText
-            self.businessInsights = businessInsights
-            self.actionItems = actionItems
-            self.isAnalyzed = !businessInsights.isEmpty || extractedText != nil
-            self.hasEmbedding = hasEmbedding
-        }
-    }
-    
-    private var documentsDirectory: URL {
-        let baseURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        return baseURL.appendingPathComponent("StitchDocuments")
-    }
-    
-    init() {
-        createDirectoryIfNeeded()
-        loadDocuments()
+        print("[DOC] RealAIService configured")
     }
     
     func setSpeechService(_ service: SpeechConversationService) {
         self.speechService = service
+        print("[DOC] SpeechService configured")
     }
     
-    // MARK: - Enhanced Document Upload with RAG Integration
+    // MARK: - Public Methods
     
-    func addDocument(url: URL, title: String? = nil) {
-        Task {
-            do {
-                try await processDocumentImmediately(url: url, customTitle: title)
-                print("âœ… Document upload completed successfully")
-            } catch {
-                print("âŒ Document upload failed: \(error)")
-                await announceError("Document upload failed. Please try again.")
+    func processDocument(url: URL) async throws -> ProcessedDocument {
+        print("📄 [DOC] Starting document processing for: \(url.lastPathComponent)")
+        
+        // FIXED: Better file validation with security scoped resources
+        let accessGranted = url.startAccessingSecurityScopedResource()
+        defer {
+            if accessGranted {
+                url.stopAccessingSecurityScopedResource()
             }
         }
-    }
-    
-    // MARK: - Enhanced Document Processing with Vector Embeddings
-    
-    private func processDocumentImmediately(url: URL, customTitle: String?) async throws {
-        print("ðŸ“„ [DOC] Starting document processing for: \(url.lastPathComponent)")
         
-        // Start security scoped access
-        guard url.startAccessingSecurityScopedResource() else {
-            throw DocumentError.insufficientPermissions
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            let errorMsg = "File not found at path: \(url.path)"
+            print("❌ [DOC] \(errorMsg)")
+            throw DocumentProcessingError.fileNotFound(errorMsg)
         }
-        
-        defer { url.stopAccessingSecurityScopedResource() }
         
         isProcessing = true
-        processingProgress = 0.0
-        
-        // Step 1: Read file data immediately (0.1)
         processingProgress = 0.1
-        let fileData = try Data(contentsOf: url)
-        let originalName = url.lastPathComponent
-        let cleanName = originalName.replacingOccurrences(of: ".pdf.pdf", with: ".pdf")
-        print("âœ… [DOC] Read \(fileData.count) bytes from \(cleanName)")
+        lastError = nil
         
-        // Step 2: Save to permanent location (0.2)
-        processingProgress = 0.2
-        let permanentURL = try saveToDocuments(data: fileData, filename: cleanName)
-        print("âœ… [DOC] Saved to: \(permanentURL.lastPathComponent)")
-        
-        // Step 3: Extract text content (0.4)
-        processingProgress = 0.4
-        let extractedText = await extractTextFromData(fileData, fileExtension: url.pathExtension)
-        print("âœ… [DOC] Text extraction: \(extractedText?.count ?? 0) characters")
-        
-        // Step 4: AI Analysis with OpenAI Vision (0.6)
-        processingProgress = 0.6
-        let analysis = await analyzeWithOpenAI(fileData: fileData, filename: cleanName, extractedText: extractedText)
-        print("âœ… [DOC] AI Analysis: \(analysis.insights.count) insights, \(analysis.actionItems.count) actions")
-        
-        // Step 5: NEW - Generate and Store Vector Embedding (0.8)
-        processingProgress = 0.8
-        let hasEmbedding = await storeDocumentEmbedding(
-            documentId: UUID(),
-            text: extractedText,
-            insights: analysis.insights,
-            actionItems: analysis.actionItems,
-            title: customTitle ?? cleanName
-        )
-        print("âœ… [DOC] Vector embedding: \(hasEmbedding ? "Generated" : "Skipped")")
-        
-        // Step 6: Create final document (1.0)
-        processingProgress = 1.0
-        let document = ProcessedDocument(
-            title: customTitle ?? cleanName.replacingOccurrences(of: ".\(url.pathExtension)", with: ""),
-            originalName: cleanName,
-            fileURL: permanentURL,
-            fileSize: Int64(fileData.count),
-            extractedText: extractedText,
-            businessInsights: analysis.insights,
-            actionItems: analysis.actionItems,
-            hasEmbedding: hasEmbedding
-        )
-        
-        documents.append(document)
-        lastProcessedDocument = document
-        saveDocuments()
-        
-        isProcessing = false
-        processingProgress = 0.0
-        
-        // Announce success
-        await announceSuccess(document: document)
-        print("ðŸŽ‰ [DOC] Document processing complete with RAG integration!")
-    }
-    
-  
-    
-    // MARK: - NEW: Semantic Document Search for AI Conversations
-    
-    func searchDocumentsByQuery(_ query: String) async -> [ProcessedDocument] {
-        print("ðŸ” [RAG] Searching documents for query: \(query)")
-        
-        guard let realAIService = realAIService else {
-            print("âŒ [RAG] No RealAIService available for search")
-            return []
+        defer {
+            isProcessing = false
+            processingProgress = 0.0
         }
         
         do {
-            let similarEmbeddings = try await realAIService.findSimilarDocuments(query: query, limit: 5)
+            // Validate file
+            try await validateFile(at: url)
+            processingProgress = 0.2
             
-            let relevantDocuments = documents.filter { document in
-                similarEmbeddings.contains { embedding in
-                    embedding.documentId == document.id
-                }
+            // Copy to local storage for processing
+            let localURL = try await copyToLocalStorage(from: url)
+            processingProgress = 0.3
+            
+            // Extract text
+            let extractedText = try await extractText(from: localURL)
+            processingProgress = 0.5
+            
+            // Get file metadata
+            let fileSize = try self.fileSize(at: url)
+            let originalName = url.lastPathComponent
+            let title = url.deletingPathExtension().lastPathComponent
+            
+            // Analyze document (if AI service is available)
+            var analysis = DocumentAnalysis(insights: [], actionItems: [])
+            if realAIService != nil && !extractedText.isEmpty {
+                analysis = try await analyzeDocument(text: extractedText, filename: originalName)
+                processingProgress = 0.8
             }
             
-            print("ðŸŽ¯ [RAG] Found \(relevantDocuments.count) relevant documents")
-            return relevantDocuments
+            // Create processed document
+            let processedDocument = ProcessedDocument(
+                title: title,
+                originalName: originalName,
+                fileURL: localURL,
+                fileSize: fileSize,
+                extractedText: extractedText,
+                businessInsights: analysis.insights,
+                actionItems: analysis.actionItems,
+                hasEmbedding: false, // Could be enhanced later
+                chunkCount: 0,
+                entityCount: 0
+            )
+            
+            // Save to collection
+            documents.append(processedDocument)
+            saveDocuments()
+            
+            processingProgress = 1.0
+            
+            // Announce success if speech service is available
+            await announceSuccess(document: processedDocument)
+            
+            print("✅ [DOC] Document processed successfully: \(processedDocument.title)")
+            return processedDocument
             
         } catch {
-            print("âŒ [RAG] Document search failed: \(error)")
-            return []
+            let errorMessage = "Document processing failed: \(error.localizedDescription)"
+            lastError = errorMessage
+            await announceError(errorMessage)
+            print("❌ [DOC] Processing failed: \(error)")
+            throw error
         }
     }
     
-    // MARK: - Enhanced Document Context for AI (RAG-Powered)
-    
-    func getRAGEnhancedContext(for query: String) async -> String {
-        print("ðŸ§  [RAG] Building enhanced context for query: \(query)")
-        
-        let relevantDocs = await searchDocumentsByQuery(query)
-        
-        guard !relevantDocs.isEmpty else {
-            return getBasicDocumentContext(for: query)
-        }
-        
-        var context = "Relevant documents found for your query:\n\n"
-        
-        for doc in relevantDocs.prefix(3) {
-            context += "ðŸ“„ **\(doc.title)**\n"
-            
-            if let text = doc.extractedText {
-                // Include relevant excerpt
-                context += "Excerpt: \(text.prefix(800))...\n"
-            }
-            
-            if !doc.businessInsights.isEmpty {
-                context += "Key Insights: \(doc.businessInsights.joined(separator: "; "))\n"
-            }
-            
-            if !doc.actionItems.isEmpty {
-                context += "Action Items: \(doc.actionItems.joined(separator: "; "))\n"
-            }
-            
-            context += "\n---\n\n"
-        }
-        
-        context += "You can reference these documents directly in your response and provide specific insights.\n"
-        
-        print("âœ… [RAG] Enhanced context built with \(relevantDocs.count) documents")
-        return context
-    }
-    
-    // MARK: - File Management (unchanged)
-    
-    private func saveToDocuments(data: Data, filename: String) throws -> URL {
-        let fileURL = documentsDirectory.appendingPathComponent(filename)
-        try data.write(to: fileURL)
-        return fileURL
-    }
-    
-    func deleteDocument(_ document: ProcessedDocument) {
-        documents.removeAll { $0.id == document.id }
+    func removeDocument(withId id: UUID) {
+        documents.removeAll { $0.id == id }
+        smartChunks.removeAll { $0.documentId == id }
         saveDocuments()
-        
-        // Clean up file
-        try? FileManager.default.removeItem(at: document.fileURL)
+        print("🗑️ [DOC] Document removed: \(id)")
     }
     
-    // MARK: - Text Extraction (unchanged)
+    func removeAllDocuments() {
+        documents.removeAll()
+        smartChunks.removeAll()
+        saveDocuments()
+        print("🗑️ [DOC] All documents removed")
+    }
     
-    private func extractTextFromData(_ data: Data, fileExtension: String) async -> String? {
-        switch fileExtension.lowercased() {
-        case "pdf":
-            return await extractTextFromPDFData(data)
-        case "txt":
-            return String(data: data, encoding: .utf8)
-        default:
-            return nil // Images processed by Vision API
+    // MARK: - Private Document Processing
+    
+    private func validateFile(at url: URL) async throws {
+        let fileSize = try self.fileSize(at: url)
+        
+        guard fileSize <= maxFileSize else {
+            throw DocumentProcessingError.fileTooLarge("File too large: \(formatFileSize(fileSize)) > \(formatFileSize(maxFileSize))")
         }
+        
+        // FIXED: Use string extension instead of UTType.rawValue
+        let fileExtension = url.pathExtension.lowercased()
+        let supportedTypes = ["pdf", "txt", "md", "rtf"]
+        
+        guard supportedTypes.contains(fileExtension) else {
+            throw DocumentProcessingError.unsupportedFormat("Unsupported file type: \(fileExtension)")
+        }
+        
+        print("✅ [DOC] File validation passed: \(formatFileSize(fileSize)) \(fileExtension)")
     }
     
-    private func extractTextFromPDFData(_ data: Data) async -> String? {
-        guard let pdfDocument = PDFDocument(data: data) else { return nil }
+    private func copyToLocalStorage(from url: URL) async throws -> URL {
+        let fileName = url.lastPathComponent
+        let localURL = documentsDirectory.appendingPathComponent(fileName)
         
-        var extractedText = ""
+        // Remove existing file if it exists
+        if FileManager.default.fileExists(atPath: localURL.path) {
+            try FileManager.default.removeItem(at: localURL)
+        }
+        
+        try FileManager.default.copyItem(at: url, to: localURL)
+        print("📁 [DOC] File copied to local storage: \(localURL.lastPathComponent)")
+        return localURL
+    }
+    
+    private func extractText(from url: URL) async throws -> String {
+        let fileExtension = url.pathExtension.lowercased()
+        
+        let extractedText: String
+        switch fileExtension {
+        case "pdf":
+            extractedText = try extractTextFromPDF(url: url)
+        case "txt", "md":
+            extractedText = try String(contentsOf: url, encoding: .utf8)
+        case "rtf":
+            extractedText = try extractTextFromRTF(url: url)
+        default:
+            throw DocumentProcessingError.unsupportedFormat("Unsupported file type for text extraction: \(fileExtension)")
+        }
+        
+        print("📖 [DOC] Text extracted: \(extractedText.count) characters")
+        return extractedText
+    }
+    
+    private func extractTextFromPDF(url: URL) throws -> String {
+        guard let pdfDocument = PDFDocument(url: url) else {
+            throw DocumentProcessingError.processingFailed("Unable to load PDF document")
+        }
+        
+        var text = ""
         for pageIndex in 0..<pdfDocument.pageCount {
-            if let page = pdfDocument.page(at: pageIndex),
-               let pageContent = page.string {
-                extractedText += pageContent + "\n"
+            if let page = pdfDocument.page(at: pageIndex) {
+                text += page.string ?? ""
+                text += "\n"
             }
         }
         
-        let trimmedText = extractedText.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmedText.isEmpty ? nil : trimmedText
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
     
-    // MARK: - OpenAI Analysis (unchanged)
+    private func extractTextFromRTF(url: URL) throws -> String {
+        let data = try Data(contentsOf: url)
+        let attributedString = try NSAttributedString(
+            data: data,
+            options: [.documentType: NSAttributedString.DocumentType.rtf],
+            documentAttributes: nil
+        )
+        return attributedString.string
+    }
     
-    private func analyzeWithOpenAI(fileData: Data, filename: String, extractedText: String?) async -> DocumentAnalysis {
-        guard !apiKey.isEmpty else {
-            print("âš ï¸ [DOC] OpenAI API key not found, skipping AI analysis")
+    private func analyzeDocument(text: String, filename: String) async throws -> DocumentAnalysis {
+        guard let realAIService = realAIService else {
+            print("⚠️ [DOC] No AI service available - skipping analysis")
             return DocumentAnalysis(insights: [], actionItems: [])
         }
         
+        let prompt = """
+        Analyze this business document and provide structured insights.
+        
+        Document: \(filename)
+        Content: \(text.prefix(3000))
+        
+        Please provide:
+        
+        BUSINESS INSIGHTS:
+        • [Insight 1]
+        • [Insight 2]
+        • [Insight 3]
+        
+        ACTION ITEMS:
+        • [Action 1]
+        • [Action 2]
+        • [Action 3]
+        
+        Focus on business value, strategic implications, and actionable next steps.
+        """
+        
         do {
-            let insights = await generateBusinessInsights(fileData: fileData, filename: filename, text: extractedText)
-            let actionItems = await generateActionItems(fileData: fileData, filename: filename, text: extractedText)
-            
+            let response = try await realAIService.generateCoachingResponse(prompt: prompt)
             return DocumentAnalysis(
-                insights: insights,
-                actionItems: actionItems
+                insights: parseInsightsFromResponse(response),
+                actionItems: parseActionItemsFromResponse(response)
             )
         } catch {
-            print("âŒ [DOC] OpenAI analysis failed: \(error)")
+            print("⚠️ [DOC] AI analysis failed: \(error)")
             return DocumentAnalysis(insights: [], actionItems: [])
         }
     }
-    
-    private func generateBusinessInsights(fileData: Data, filename: String, text: String?) async -> [String] {
-        let prompt = buildInsightPrompt(filename: filename, text: text)
-        
-        do {
-            let response = try await callOpenAIGPT4(prompt: prompt)
-            return parseInsightsFromResponse(response)
-        } catch {
-            print("âŒ [DOC] Insights generation failed: \(error)")
-            return []
-        }
-    }
-    
-    private func generateActionItems(fileData: Data, filename: String, text: String?) async -> [String] {
-        let prompt = buildActionItemPrompt(filename: filename, text: text)
-        
-        do {
-            let response = try await callOpenAIGPT4(prompt: prompt)
-            return parseActionItemsFromResponse(response)
-        } catch {
-            print("âŒ [DOC] Action items generation failed: \(error)")
-            return []
-        }
-    }
-    
-    // MARK: - OpenAI API Calls (unchanged)
-    
-    private func callOpenAIGPT4(prompt: String) async throws -> String {
-        let url = URL(string: "https://api.openai.com/v1/chat/completions")!
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
-        let requestBody: [String: Any] = [
-            "model": "gpt-4o",
-            "messages": [
-                ["role": "system", "content": "You are an expert business analyst. Provide clear, actionable insights."],
-                ["role": "user", "content": prompt]
-            ],
-            "max_tokens": 500,
-            "temperature": 0.3
-        ]
-        
-        request.httpBody = try JSONSerialization.data(withJSONObject: requestBody)
-        
-        let (data, _) = try await URLSession.shared.data(for: request)
-        
-        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let choices = json["choices"] as? [[String: Any]],
-              let message = choices.first?["message"] as? [String: Any],
-              let content = message["content"] as? String else {
-            throw DocumentError.processingFailed("OpenAI API call failed")
-        }
-        
-        return content
-    }
-    
-    // MARK: - Prompt Building (unchanged)
-    
-    private func buildInsightPrompt(filename: String, text: String?) -> String {
-        var prompt = "Analyze this document: \(filename)\n\n"
-        
-        if let text = text {
-            prompt += "Content:\n\(text.prefix(2000))\n\n"
-        }
-        
-        prompt += """
-        Provide 3-5 key business insights in this format:
-        1. [Insight 1]
-        2. [Insight 2]
-        3. [Insight 3]
-        
-        Focus on strategic implications, opportunities, and important findings.
-        """
-        
-        return prompt
-    }
-    
-    private func buildActionItemPrompt(filename: String, text: String?) -> String {
-        var prompt = "Analyze this document: \(filename)\n\n"
-        
-        if let text = text {
-            prompt += "Content:\n\(text.prefix(2000))\n\n"
-        }
-        
-        prompt += """
-        Extract 3-5 specific action items in this format:
-        1. [Action Item 1]
-        2. [Action Item 2]
-        3. [Action Item 3]
-        
-        Focus on concrete next steps and decisions that need to be made.
-        """
-        
-        return prompt
-    }
-    
-    // MARK: - Response Parsing (unchanged)
     
     private func parseInsightsFromResponse(_ response: String) -> [String] {
         let lines = response.components(separatedBy: .newlines)
-        return lines.compactMap { line in
+        var insights: [String] = []
+        var inInsightsSection = false
+        
+        for line in lines {
             let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed.starts(with: "1.") || trimmed.starts(with: "2.") ||
-               trimmed.starts(with: "3.") || trimmed.starts(with: "4.") ||
-               trimmed.starts(with: "5.") {
-                return String(trimmed.dropFirst(2).trimmingCharacters(in: .whitespacesAndNewlines))
+            
+            if trimmed.uppercased().contains("INSIGHT") {
+                inInsightsSection = true
+                continue
             }
-            return nil
+            
+            if trimmed.uppercased().contains("ACTION") {
+                inInsightsSection = false
+            }
+            
+            if inInsightsSection && (trimmed.hasPrefix("•") || trimmed.hasPrefix("-") || trimmed.hasPrefix("*")) {
+                let insight = String(trimmed.dropFirst()).trimmingCharacters(in: .whitespacesAndNewlines)
+                if !insight.isEmpty {
+                    insights.append(insight)
+                }
+            }
         }
+        
+        return insights
     }
     
     private func parseActionItemsFromResponse(_ response: String) -> [String] {
         let lines = response.components(separatedBy: .newlines)
-        return lines.compactMap { line in
+        var actionItems: [String] = []
+        var inActionSection = false
+        
+        for line in lines {
             let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed.starts(with: "1.") || trimmed.starts(with: "2.") ||
-               trimmed.starts(with: "3.") || trimmed.starts(with: "4.") ||
-               trimmed.starts(with: "5.") {
-                return String(trimmed.dropFirst(2).trimmingCharacters(in: .whitespacesAndNewlines))
+            
+            if trimmed.uppercased().contains("ACTION") {
+                inActionSection = true
+                continue
             }
-            return nil
+            
+            if inActionSection && (trimmed.hasPrefix("•") || trimmed.hasPrefix("-") || trimmed.hasPrefix("*")) {
+                let actionItem = String(trimmed.dropFirst()).trimmingCharacters(in: .whitespacesAndNewlines)
+                if !actionItem.isEmpty {
+                    actionItems.append(actionItem)
+                }
+            }
+        }
+        
+        return actionItems
+    }
+    
+    // MARK: - Storage Management
+    
+    private func createDirectoryIfNeeded() {
+        if !FileManager.default.fileExists(atPath: documentsDirectory.path) {
+            do {
+                try FileManager.default.createDirectory(at: documentsDirectory, withIntermediateDirectories: true)
+                print("📁 [DOC] Created documents directory")
+            } catch {
+                print("❌ [DOC] Failed to create documents directory: \(error)")
+            }
         }
     }
     
-    // MARK: - Speech Announcements (unchanged)
+    private func saveDocuments() {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        
+        do {
+            let data = try encoder.encode(documents)
+            let url = documentsDirectory.appendingPathComponent("processed_documents.json")
+            try data.write(to: url)
+            print("💾 [DOC] Successfully saved \(documents.count) documents")
+        } catch {
+            print("❌ [DOC] Failed to save documents: \(error)")
+        }
+    }
+    
+    // FIXED: Better error handling for first-run scenarios
+    private func loadDocuments() {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        
+        do {
+            let url = documentsDirectory.appendingPathComponent("processed_documents.json")
+            let data = try Data(contentsOf: url)
+            documents = try decoder.decode([ProcessedDocument].self, from: data)
+            print("📂 [DOC] Successfully loaded \(documents.count) documents")
+        } catch {
+            // Check if it's just a missing file (normal for first run)
+            let nsError = error as NSError
+            if nsError.domain == NSCocoaErrorDomain && nsError.code == NSFileReadNoSuchFileError {
+                print("📂 [DOC] No existing documents file - starting fresh")
+            } else {
+                print("⚠️ [DOC] Failed to load documents (will start fresh): \(error)")
+            }
+            documents = []
+        }
+    }
+    
+    // MARK: - Helper Methods
+    
+    private func fileSize(at url: URL) throws -> Int64 {
+        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        return attributes[.size] as? Int64 ?? 0
+    }
+    
+    private func formatFileSize(_ bytes: Int64) -> String {
+        return ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+    }
     
     private func announceSuccess(document: ProcessedDocument) async {
         guard let speechService = speechService else { return }
         
-        var message = "Document \(document.title) processed successfully."
+        var message = "Document '\(document.title)' processed successfully."
         
         if !document.businessInsights.isEmpty {
             message += " Found \(document.businessInsights.count) business insights."
@@ -434,106 +410,242 @@ class SafeDocumentManager: ObservableObject {
             message += " Document is now searchable."
         }
         
-        print("ðŸ“Š [DOC] Announcing: \(message)")
+        print("📢 [DOC] Announcing: \(message)")
         
         do {
             try await speechService.speak(text: message)
         } catch {
-            print("âŒ [DOC] Failed to announce success: \(error)")
+            print("⚠️ [DOC] Failed to announce success: \(error)")
         }
     }
     
     private func announceError(_ message: String) async {
         guard let speechService = speechService else { return }
         
-        print("ðŸ“Š [DOC] Announcing error: \(message)")
+        print("📢 [DOC] Announcing error: \(message)")
         
         do {
             try await speechService.speak(text: message)
         } catch {
-            print("âŒ [DOC] Failed to announce error: \(error)")
-        }
-    }
-    
-    // MARK: - Legacy Document Context (for backward compatibility)
-    
-    private func getBasicDocumentContext(for query: String) -> String {
-        guard !documents.isEmpty else { return "" }
-        
-        let recentDocs = Array(documents.suffix(3))
-        var context = "Available documents for discussion:\n\n"
-        
-        for doc in recentDocs {
-            context += "ðŸ“„ **\(doc.title)**\n"
-            
-            if let text = doc.extractedText {
-                context += "Content: \(text.prefix(1000))\n"
-            }
-            
-            if !doc.businessInsights.isEmpty {
-                context += "Business Insights: \(doc.businessInsights.joined(separator: "; "))\n"
-            }
-            
-            if !doc.actionItems.isEmpty {
-                context += "Action Items: \(doc.actionItems.joined(separator: "; "))\n"
-            }
-            
-            context += "\n---\n\n"
-        }
-        
-        context += "User can ask specific questions about any of these documents and their content.\n"
-        return context
-    }
-    
-    // MARK: - Backward Compatibility Method
-    
-    func getDocumentContext(for query: String) -> String {
-        // Use enhanced RAG context in async context, fall back to basic for sync calls
-        return getBasicDocumentContext(for: query)
-    }
-    
-    // MARK: - Storage Management (unchanged)
-    
-    private func createDirectoryIfNeeded() {
-        do {
-            try FileManager.default.createDirectory(at: documentsDirectory, withIntermediateDirectories: true)
-        } catch {
-            print("Failed to create documents directory: \(error)")
-        }
-    }
-    
-    private func loadDocuments() {
-        do {
-            let documentsFile = documentsDirectory.appendingPathComponent("processed_documents.json")
-            guard FileManager.default.fileExists(atPath: documentsFile.path) else { return }
-            
-            let data = try Data(contentsOf: documentsFile)
-            let decoder = JSONDecoder()
-            decoder.dateDecodingStrategy = .iso8601
-            documents = try decoder.decode([ProcessedDocument].self, from: data)
-            print("ðŸ“š [DOC] Loaded \(documents.count) processed documents")
-        } catch {
-            print("âŒ [DOC] Failed to load documents: \(error)")
-        }
-    }
-    
-    private func saveDocuments() {
-        do {
-            let documentsFile = documentsDirectory.appendingPathComponent("processed_documents.json")
-            let encoder = JSONEncoder()
-            encoder.dateEncodingStrategy = .iso8601
-            let data = try encoder.encode(documents)
-            try data.write(to: documentsFile)
-            print("ðŸ’¾ [DOC] Saved \(documents.count) documents to storage")
-        } catch {
-            print("âŒ [DOC] Failed to save documents: \(error)")
+            print("⚠️ [DOC] Failed to announce error: \(error)")
         }
     }
 }
 
-// MARK: - Supporting Models (unchanged)
+// MARK: - Connected sources (data room, Drive, …)
+
+extension SafeDocumentManager {
+
+    /// Pull every item from a connected source and fold it into the document
+    /// store — the same store that builds Aria's DOCUMENT CONTEXT. Replaces any
+    /// prior docs from this source (so a Refresh is idempotent), runs no per-doc
+    /// AI analysis or per-doc voice announce (this is a bulk sync, not an upload),
+    /// and announces a single summary at the end. Returns the count ingested.
+    @discardableResult
+    func syncSource(_ source: DocumentSource) async throws -> Int {
+        isProcessing = true
+        processingProgress = 0.05
+        lastError = nil
+        defer {
+            isProcessing = false
+            processingProgress = 0.0
+        }
+
+        let items: [SourceItem]
+        do {
+            items = try await source.fetch()
+        } catch {
+            lastError = "Could not reach \(source.displayName): \(error.localizedDescription)"
+            await announceError(lastError!)
+            throw error
+        }
+
+        // Idempotent refresh: drop this source's previous docs (+ their chunks).
+        let staleIds = Set(documents.filter { $0.sourceId == source.id }.map { $0.id })
+        documents.removeAll { $0.sourceId == source.id }
+        smartChunks.removeAll { staleIds.contains($0.documentId) }
+
+        var ingested = 0
+        for (index, item) in items.enumerated() {
+            do {
+                let materialized = try await materialize(item, sourceId: source.id)
+                documents.append(
+                    ProcessedDocument(
+                        title: item.title,
+                        originalName: materialized.url.lastPathComponent,
+                        fileURL: materialized.url,
+                        fileSize: materialized.size,
+                        extractedText: materialized.text,
+                        sourceId: source.id
+                    )
+                )
+                ingested += 1
+            } catch {
+                // One bad file shouldn't abort the whole sync.
+                print("⚠️ [SOURCE] Skipped '\(item.title)': \(error.localizedDescription)")
+            }
+            processingProgress = 0.05 + 0.9 * Double(index + 1) / Double(max(items.count, 1))
+        }
+
+        saveDocuments()
+        processingProgress = 1.0
+        await announceSourceSync(source: source, count: ingested)
+        print("✅ [SOURCE] Synced \(ingested)/\(items.count) items from \(source.displayName)")
+        return ingested
+    }
+
+    /// Turn a SourceItem into a local file + extracted text. Narrative sections
+    /// are written as .txt; remote files are downloaded then extracted with the
+    /// same PDF/RTF path manual uploads use (CSV/unknown fall back to UTF-8).
+    private func materialize(_ item: SourceItem, sourceId: String) async throws
+        -> (url: URL, text: String, size: Int64) {
+        switch item.payload {
+        case .text(let body):
+            let localURL = documentsDirectory.appendingPathComponent(
+                sourceFileName(sourceId: sourceId, title: item.title, ext: "txt"))
+            try body.data(using: .utf8)?.write(to: localURL)
+            return (localURL, body, try fileSize(at: localURL))
+
+        case .remoteFile(let remoteURL, let ext):
+            let (tempURL, response) = try await URLSession.shared.download(from: remoteURL)
+            if let http = response as? HTTPURLResponse, http.statusCode != 200 {
+                throw DocumentProcessingError.networkError("HTTP \(http.statusCode) downloading \(item.title)")
+            }
+            let localURL = documentsDirectory.appendingPathComponent(
+                sourceFileName(sourceId: sourceId, title: item.title, ext: ext))
+            if FileManager.default.fileExists(atPath: localURL.path) {
+                try FileManager.default.removeItem(at: localURL)
+            }
+            try FileManager.default.moveItem(at: tempURL, to: localURL)
+
+            let lower = ext.lowercased()
+            let text: String
+            if ["pdf", "txt", "md", "rtf"].contains(lower) {
+                text = try await extractText(from: localURL)
+            } else {
+                text = (try? String(contentsOf: localURL, encoding: .utf8)) ?? ""
+            }
+            return (localURL, text, try fileSize(at: localURL))
+        }
+    }
+
+    /// Deterministic, collision-safe local filename namespaced by source.
+    private func sourceFileName(sourceId: String, title: String, ext: String) -> String {
+        let slug = title
+            .replacingOccurrences(of: "[^A-Za-z0-9]+", with: "-", options: .regularExpression)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+            .lowercased()
+        let safeSlug = slug.isEmpty ? "item" : String(slug.prefix(60))
+        return "\(sourceId)__\(safeSlug).\(ext)"
+    }
+
+    private func announceSourceSync(source: DocumentSource, count: Int) async {
+        guard let speechService = speechService else { return }
+        let message = count > 0
+            ? "Synced \(count) document\(count == 1 ? "" : "s") from the \(source.displayName)."
+            : "I couldn't pull anything new from the \(source.displayName)."
+        print("📢 [SOURCE] \(message)")
+        try? await speechService.speak(text: message)
+    }
+}
+
+// MARK: - Error Types
+
+enum DocumentProcessingError: LocalizedError {
+    case fileNotFound(String)
+    case unsupportedFormat(String)
+    case fileTooLarge(String)
+    case processingFailed(String)
+    case networkError(String)
+    
+    var errorDescription: String? {
+        switch self {
+        case .fileNotFound(let message): return message
+        case .unsupportedFormat(let message): return message
+        case .fileTooLarge(let message): return message
+        case .processingFailed(let message): return message
+        case .networkError(let message): return message
+        }
+    }
+}
+
+// MARK: - Supporting Models (from original file)
 
 struct DocumentAnalysis {
     let insights: [String]
     let actionItems: [String]
+}
+
+struct SmartDocumentChunk: Identifiable, Codable {
+    let id: UUID
+    let documentId: UUID
+    let chunkIndex: Int
+    let content: String
+    let embedding: [Double]
+    
+    // Enhanced Metadata for Intelligence
+    let title: String?
+    let sectionHeading: String?
+    let pageNumber: Int?
+    let chunkType: ChunkType
+    let keyPhrases: [String]
+    let namedEntities: [String]
+    let businessRelevance: Double
+    let wordCount: Int
+    
+    enum ChunkType: String, Codable {
+        case document = "document"
+        case section = "section"
+        case paragraph = "paragraph"
+        case list = "list"
+        case table = "table"
+        case conclusion = "conclusion"
+    }
+}
+
+struct ProcessedDocument: Identifiable, Codable {
+    let id = UUID()
+    let title: String
+    let originalName: String
+    let fileURL: URL
+    let uploadDate: Date
+    let fileSize: Int64
+    let extractedText: String?
+    let businessInsights: [String]
+    let actionItems: [String]
+    let isAnalyzed: Bool
+    let hasEmbedding: Bool
+    let chunkCount: Int
+    let entityCount: Int
+    /// Identifies the connected source this doc came from (e.g. "stitch-dataroom"),
+    /// or nil for a manually-uploaded file. Optional so older persisted docs decode.
+    let sourceId: String?
+
+    init(
+        title: String,
+        originalName: String,
+        fileURL: URL,
+        fileSize: Int64,
+        extractedText: String? = nil,
+        businessInsights: [String] = [],
+        actionItems: [String] = [],
+        hasEmbedding: Bool = false,
+        chunkCount: Int = 0,
+        entityCount: Int = 0,
+        sourceId: String? = nil
+    ) {
+        self.title = title
+        self.originalName = originalName
+        self.fileURL = fileURL
+        self.uploadDate = Date()
+        self.fileSize = fileSize
+        self.extractedText = extractedText
+        self.businessInsights = businessInsights
+        self.actionItems = actionItems
+        self.isAnalyzed = !businessInsights.isEmpty || extractedText != nil
+        self.hasEmbedding = hasEmbedding
+        self.chunkCount = chunkCount
+        self.entityCount = entityCount
+        self.sourceId = sourceId
+    }
 }

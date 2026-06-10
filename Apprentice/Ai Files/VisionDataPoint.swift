@@ -386,7 +386,7 @@ class VisionService: ObservableObject {
             id: UUID(),
             title: json.title,
             description: json.description ?? "",
-            assignee: json.assignee,
+            assignee: json.assignee!,
             dueDate: nil,
             priority: .medium,
             status: .pending,

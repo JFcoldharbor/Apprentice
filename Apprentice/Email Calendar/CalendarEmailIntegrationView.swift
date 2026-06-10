@@ -202,17 +202,17 @@ struct CalendarEmailIntegrationView: View {
             
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
-                    Image(systemName: emailService.canSendEmail() ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                        .foregroundColor(emailService.canSendEmail() ? .green : .orange)
+                    Image(systemName: emailService.canSendEmail ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                        .foregroundColor(emailService.canSendEmail ? .green : .orange)
                     
-                    Text(emailService.canSendEmail() ? "Email Ready" : "Email Setup Required")
+                    Text(emailService.canSendEmail ? "Email Ready" : "Email Setup Required")
                         .fontWeight(.medium)
                         .foregroundColor(.white)
                     
                     Spacer()
                 }
                 
-                Text(emailService.canSendEmail() ?
+                Text(emailService.canSendEmail ?
                      "Send session summaries and action items" :
                      "Configure Mail app to send session summaries")
                     .foregroundColor(.white.opacity(0.8))

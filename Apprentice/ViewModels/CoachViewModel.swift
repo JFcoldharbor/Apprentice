@@ -1,0 +1,88 @@
+//
+//  CoachViewModel.swift
+//  Apprentice
+//
+//  Layer 4 (ViewModels) — drives the coach chat. Persists each turn to SwiftData
+//  (the view renders them via @Query), builds the per-turn context, and calls
+//  Claude through AIClient. Reads are reactive; this is the send/command path.
+//
+
+import Foundation
+import SwiftUI
+import SwiftData
+
+@MainActor
+final class CoachViewModel: ObservableObject {
+
+    @Published var draft = ""
+    @Published private(set) var isSending = false
+    @Published var errorMessage: String?
+    @Published var autoSpeak: Bool = UserDefaults.standard.bool(forKey: "coach_autospeak") {
+        didSet { UserDefaults.standard.set(autoSpeak, forKey: "coach_autospeak") }
+    }
+
+    private let context: ModelContext
+
+    init(context: ModelContext) {
+        self.context = context
+    }
+
+    func send() {
+        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, !isSending else { return }
+        draft = ""
+
+        let userMessage = CoachMessage(role: "user", text: text)
+        context.insert(userMessage)
+        try? context.save()
+
+        isSending = true
+        Task { await respond(to: text) }
+    }
+
+    private func respond(to text: String) async {
+        defer { isSending = false }
+
+        let system = CoachPersona.system + "\n\n" + CoachContext.build(query: text, context: context)
+        let history = recentHistory()
+
+        do {
+            let reply = try await AIClient.shared.chatText(
+                system: system,
+                messages: history,
+                tier: .standard,
+                maxTokens: 1500
+            )
+            context.insert(CoachMessage(role: "assistant", text: reply))
+            try? context.save()
+            if autoSpeak {
+                Task { await VoiceService.shared.speak(reply) }
+            }
+        } catch {
+            errorMessage = error.localizedDescription
+            context.insert(CoachMessage(role: "assistant",
+                                       text: "⚠️ I couldn't reach the coach — \(error.localizedDescription)"))
+            try? context.save()
+        }
+    }
+
+    /// The last `limit` turns as Claude messages, trimmed so the window starts on
+    /// a user turn (the API requires messages[0] to be `user`).
+    private func recentHistory(limit: Int = 12) -> [AIChatMessage] {
+        var descriptor = FetchDescriptor<CoachMessage>(sortBy: [SortDescriptor(\.createdAt, order: .reverse)])
+        descriptor.fetchLimit = limit
+        let recent = ((try? context.fetch(descriptor)) ?? []).reversed()
+
+        var messages = recent.map { AIChatMessage(role: $0.role, content: $0.text) }
+        while let first = messages.first, first.role != "user" {
+            messages.removeFirst()
+        }
+        return messages
+    }
+
+    func clearConversation() {
+        let all = (try? context.fetch(FetchDescriptor<CoachMessage>())) ?? []
+        for message in all { context.delete(message) }
+        try? context.save()
+    }
+}

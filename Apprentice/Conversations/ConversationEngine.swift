@@ -1,504 +1,554 @@
 //
-//  AudioRecorder.swift
+//  ConversationEngine.swift
 //  Stitch Executive AI
 //
-//  Layer 4: Core Services - Enhanced with 10-minute chunking system
-//  UPDATED: Automatic chunking to prevent Whisper API transcription failures
+//  Layer 5: Business Logic - Complete conversation intelligence with MEMORY
+//  Enhanced with DUAL-MODE: Assistant vs Mentor interaction types
+//  FIXED: ProactiveInsight defined before class to fix scope issues
 //
 
 import Foundation
-import AVFoundation
-import SwiftUI
+
+// MARK: - Supporting Models (MUST be defined before class that uses them)
+
+struct ProactiveInsight: Codable, Identifiable {
+    let id = UUID()
+    let type: InsightType
+    let message: String
+    let priority: Priority
+    let timestamp = Date()
+    
+    enum InsightType: String, Codable {
+        case pattern = "Pattern Recognition"
+        case opportunity = "Business Opportunity"
+        case risk = "Risk Alert"
+        case recommendation = "Strategic Recommendation"
+    }
+    
+    enum Priority: String, Codable {
+        case low, medium, high, urgent
+    }
+}
+
+enum InteractionType {
+    case assistant  // Direct, helpful, factual information delivery
+    case mentor     // Challenging, expert, stern guidance and coaching
+}
+
+enum CoachingRelationshipLevel: String {
+    case initial = "Initial Discovery (0-5 sessions)"
+    case exploring = "Exploring Patterns (6-15 sessions)"
+    case understanding = "Understanding Phase (16-30 sessions)"
+    case intimate = "Intimate Partnership (31+ sessions)"
+}
+
+struct ConversationResult {
+    let transcript: String
+    let response: String
+    let insights: [ProactiveInsight]
+    let memoryConnections: [SessionConnection]
+    let relatedSessions: [ExecutiveSession]
+}
+
+// MARK: - Memory Search Result
+
+struct MemorySearchResult {
+    let relatedSessions: [ExecutiveSession]
+    let connections: [SessionConnection]
+    let searchScore: Double
+}
 
 @MainActor
-class AudioRecorder: NSObject, ObservableObject {
+class ConversationEngine: ObservableObject {
     
-    // MARK: - Published Properties
+    // MARK: - Dependencies
     
-    @Published var isRecording = false
-    @Published var recordingDuration: TimeInterval = 0
-    @Published var currentRecordingURL: URL?
-    @Published var errorMessage: String?
-    @Published var hasPermission = false
+    private let realAIService: RealAIService
+    private let documentManager: SafeDocumentManager
+    private let profileManager: FounderProfileManager
+    private let sessionManager: SessionManager
+    private let memoryCalculator = MemoryConnectionCalculator() // Create internally
     
-    // MARK: - NEW: Chunking System Properties
+    // MARK: - Conversation State
     
-    @Published var currentChunk: Int = 1
-    @Published var totalChunks: Int = 1
-    @Published var chunkDuration: TimeInterval = 0
-    @Published var recordingChunks: [RecordingChunk] = []
-    @Published var isProcessingChunks = false
+    @Published var conversationHistory: [SimpleConversationTurn] = []
+    @Published var currentContext: String = ""
+    @Published var proactiveInsights: [ProactiveInsight] = [] // Now ProactiveInsight is in scope!
     
-    // MARK: - Private Properties
+    // MARK: - Initialization State
     
-    private var audioRecorder: AVAudioRecorder?
-    private var recordingTimer: Timer?
-    private var chunkTimer: Timer?
-    private var startTime: Date?
-    private var sessionStartTime: Date?
+    private var contextInitialized = false
+    private var initializationTask: Task<Void, Never>?
     
-    // MARK: - Chunking Configuration
+    // MARK: - FIXED: Simplified Initialization (No async in init)
     
-    private let chunkDurationMinutes: TimeInterval = 10.0 // 10-minute chunks
-    private let chunkDurationSeconds: TimeInterval = 10.0 * 60.0 // 600 seconds
-    private let maxFileSize: Int = 20_000_000 // 20MB safety limit (Whisper limit is 25MB)
-    
-    // MARK: - Computed Properties
-    
-    var formattedDuration: String {
-        let minutes = Int(recordingDuration) / 60
-        let seconds = Int(recordingDuration) % 60
-        return String(format: "%02d:%02d", minutes, seconds)
+    init(
+        realAIService: RealAIService,
+        documentManager: SafeDocumentManager,
+        profileManager: FounderProfileManager,
+        sessionManager: SessionManager
+    ) {
+        self.realAIService = realAIService
+        self.documentManager = documentManager
+        self.profileManager = profileManager
+        self.sessionManager = sessionManager
+        
+        print("🤖 [CONVERSATION] ConversationEngine initialized")
+        // Context initialization will happen when first needed
     }
     
-    var formattedChunkDuration: String {
-        let minutes = Int(chunkDuration) / 60
-        let seconds = Int(chunkDuration) % 60
-        return String(format: "%02d:%02d", minutes, seconds)
+    deinit {
+        initializationTask?.cancel()
     }
     
-    var formattedSessionDuration: String {
-        guard let sessionStart = sessionStartTime else { return "00:00" }
-        let sessionDuration = Date().timeIntervalSince(sessionStart)
-        let minutes = Int(sessionDuration) / 60
-        let seconds = Int(sessionDuration) % 60
-        return String(format: "%02d:%02d", minutes, seconds)
-    }
+    // MARK: - Context Initialization (Lazy)
     
-    // MARK: - Initialization
-    
-    override init() {
-        super.init()
-        checkPermissions()
-        loadExistingChunks()
-    }
-    
-    // MARK: - Permission Management
-
-    func checkPermissions() {
-        switch AVAudioSession.sharedInstance().recordPermission {
-        case .granted:
-            hasPermission = true
-        case .denied:
-            hasPermission = false
-        case .undetermined:
-            Task {
-                try? await requestPermission()
-            }
-        @unknown default:
-            hasPermission = false
+    private func ensureContextInitialized() async {
+        guard !contextInitialized else { return }
+        
+        // Only allow one initialization at a time
+        if let existingTask = initializationTask {
+            await existingTask.value
+            return
         }
+        
+        initializationTask = Task {
+            await buildInitialContext()
+            contextInitialized = true
+            print("✅ [CONVERSATION] Context initialized")
+        }
+        
+        await initializationTask!.value
     }
-
-    func requestPermission() async throws {
-        return await withCheckedContinuation { continuation in
-            AVAudioSession.sharedInstance().requestRecordPermission { [weak self] granted in
-                DispatchQueue.main.async {
-                    self?.hasPermission = granted
-                    if !granted {
-                        self?.errorMessage = "Microphone permission is required for recording"
-                    }
-                    continuation.resume()
+    
+    // MARK: - Core Conversation Intelligence
+    
+    func generateProactiveWelcome() async -> String {
+        print("🤖 [CONVERSATION] Generating proactive welcome with full context")
+        
+        // Ensure context is initialized before proceeding
+        await ensureContextInitialized()
+        
+        guard let profile = profileManager.founderProfile else {
+            return "Hello! I'm your executive AI coach. Let me learn about your business first so I can provide personalized guidance."
+        }
+        
+        let context = await buildComprehensiveContext()
+        return await buildContextualWelcome(profile: profile, context: context)
+    }
+    
+    func processAudioInput(_ audioURL: URL) async throws -> ConversationResult {
+        print("🤖 [CONVERSATION] Processing audio with memory integration")
+        
+        await ensureContextInitialized()
+        
+        // Step 1: Transcribe audio
+        let transcript = try await realAIService.transcribeAudio(audioURL: audioURL)
+        
+        // Step 2: Use text processing with dual-mode detection
+        return try await processTextInput(transcript)
+    }
+    
+    // MARK: - FIXED: Text Input Processing with REAL Memory Integration
+    
+    func processTextInput(_ transcript: String) async throws -> ConversationResult {
+        print("🤖 [CONVERSATION] Processing text input with memory search")
+        print("📤 Input: '\(transcript)'")
+        
+        await ensureContextInitialized()
+        
+        // Step 1: Search for relevant memories FIRST
+        let memoryResults = await searchMemoryForQuery(transcript)
+        print("🧠 Found \(memoryResults.relatedSessions.count) related sessions and \(memoryResults.connections.count) memory connections")
+        
+        // Step 2: Detect interaction type
+        let interactionType = detectInteractionType(transcript)
+        print("🎯 Interaction type detected: \(interactionType)")
+        
+        // Step 3: Build comprehensive context WITH memory results
+        let context = await buildComprehensiveContextWithMemory(memoryResults: memoryResults)
+        let contextualPrompt = buildContextualPrompt(userInput: transcript, context: context, memoryResults: memoryResults)
+        
+        print("💬 Using \(interactionType == .assistant ? "ASSISTANT" : "MENTOR") mode")
+        
+        // Step 4: Generate response
+        let response = try await realAIService.generateCoachingResponse(prompt: contextualPrompt)
+        
+        // Step 5: Update conversation history
+        let turn = SimpleConversationTurn(
+            userInput: transcript,
+            aiResponse: response,
+            sessionId: UUID().uuidString // Convert to string for compatibility
+        )
+        conversationHistory.append(turn)
+        
+        // Keep history manageable
+        if conversationHistory.count > 50 {
+            conversationHistory = Array(conversationHistory.suffix(40))
+        }
+        
+        // Step 6: Generate insights
+        let insights = await generateProactiveInsights(from: response, context: context)
+        proactiveInsights = insights
+        
+        return ConversationResult(
+            transcript: transcript,
+            response: response,
+            insights: insights,
+            memoryConnections: memoryResults.connections,
+            relatedSessions: memoryResults.relatedSessions
+        )
+    }
+    
+    // MARK: - Simple Processing for Fast Responses
+    
+    func processUserInputSimple(_ transcript: String) async throws -> String {
+        print("🤖 [CONVERSATION] Simple processing for: '\(transcript)'")
+        
+        // Build minimal context for speed
+        let quickContext = buildQuickContext()
+        
+        let prompt = """
+        Context: \(quickContext)
+        User input: "\(transcript)"
+        
+        Respond as an executive AI coach. Be direct and conversational. Keep responses under 60 words.
+        Focus on being helpful and actionable.
+        """
+        
+        return try await realAIService.generateCoachingResponse(prompt: prompt)
+    }
+    
+    // MARK: - Memory Search and Analysis
+    
+    private func searchMemoryForQuery(_ query: String) async -> MemorySearchResult {
+        // Extract key terms for memory search
+        let searchTerms = extractKeyTerms(from: query)
+        
+        // Find related sessions
+        let relatedSessions = sessionManager.sessions.filter { session in
+            searchTerms.contains { term in
+                session.title.localizedCaseInsensitiveContains(term) ||
+                session.attendees.contains { $0.localizedCaseInsensitiveContains(term) } ||
+                session.notes.contains { note in
+                    note.content.localizedCaseInsensitiveContains(term)
                 }
             }
         }
-    }
-    
-    // MARK: - Enhanced Recording Methods with Chunking
-    
-    func startRecording() {
-        guard hasPermission else {
-            errorMessage = "Microphone permission required"
-            return
-        }
         
-        guard !isRecording else {
-            print("⚠️ Already recording")
-            return
-        }
+        // FIXED: Use the correct method name from the existing MemoryConnectionCalculator
+        let connections = await memoryCalculator.analyzeConnections(sessions: relatedSessions)
         
-        // Initialize session tracking
-        sessionStartTime = Date()
-        currentChunk = 1
-        totalChunks = 1
-        chunkDuration = 0
-        recordingDuration = 0
-        recordingChunks = []
-        
-        startNewChunk()
-    }
-    
-    private func startNewChunk() {
-        do {
-            try setupAudioSession()
-            try setupRecorder(chunkNumber: currentChunk)
-            
-            guard let recorder = audioRecorder else {
-                throw RecordingError.setupFailed
-            }
-            
-            if recorder.record() {
-                isRecording = true
-                startTime = Date()
-                startTimers()
-                errorMessage = nil
-                
-                print("🎤 Recording chunk \(currentChunk) started")
-                print("📊 Total session duration: \(formattedSessionDuration)")
-            } else {
-                throw RecordingError.recordingFailed
-            }
-            
-        } catch {
-            handleError(error)
-        }
-    }
-    
-    private func finishCurrentChunk(startNext: Bool = true) {
-        guard let recorder = audioRecorder,
-              let chunkURL = currentRecordingURL else {
-            print("⚠️ No active recorder to finish chunk")
-            return
-        }
-        
-        // Stop current recorder
-        recorder.stop()
-        stopTimers()
-        
-        // Create chunk record
-        let chunk = RecordingChunk(
-            number: currentChunk,
-            url: chunkURL,
-            duration: chunkDuration,
-            fileSize: getFileSize(url: chunkURL),
-            timestamp: Date()
+        return MemorySearchResult(
+            relatedSessions: Array(relatedSessions.prefix(5)), // Limit for performance
+            connections: connections,
+            searchScore: calculateAverageScore(for: connections)
         )
-        recordingChunks.append(chunk)
+    }
+    
+    private func calculateAverageScore(for connections: [SessionConnection]) -> Double {
+        guard !connections.isEmpty else { return 0.0 }
+        return connections.reduce(0.0) { $0 + $1.score } / Double(connections.count)
+    }
+    
+    // MARK: - Context Building (Simplified)
+    
+    private func buildInitialContext() async {
+        currentContext = await buildComprehensiveContext()
+        print("📋 [CONVERSATION] Initial context built: \(currentContext.count) characters")
+    }
+    
+    private func buildComprehensiveContext() async -> String {
+        var context = ""
         
-        print("✅ Completed chunk \(currentChunk): \(chunk.formattedDuration)")
-        print("📁 File size: \(chunk.formattedFileSize)")
+        // Profile context
+        if let profile = profileManager.founderProfile {
+            context += buildProfileContext(profile)
+            context += "\n\n"
+        }
         
-        if startNext {
-            // Prepare for next chunk
-            currentChunk += 1
-            totalChunks += 1
-            chunkDuration = 0
+        // Document context
+        if !documentManager.documents.isEmpty {
+            context += await buildDocumentContext()
+            context += "\n\n"
+        }
+        
+        // Session context
+        context += await buildSessionContext()
+        
+        return context
+    }
+    
+    private func buildQuickContext() -> String {
+        var context = ""
+        
+        if let profile = profileManager.founderProfile {
+            context += "Founder: \(profile.founderName), \(profile.founderRole)\n"
+            context += "Business: \(profile.businessName ?? "Startup")\n"
+            context += "Industry: \(profile.industry)\n"
+        }
+        
+        return context
+    }
+    
+    private func buildProfileContext(_ profile: FounderProfile) -> String {
+        return """
+        FOUNDER PROFILE:
+        Name: \(profile.founderName)
+        Role: \(profile.founderRole)
+        Business: \(profile.businessName ?? "Startup")
+        Industry: \(profile.industry)
+        Stage: \(profile.businessStage.rawValue)
+        Current Challenges: \(profile.currentChallenges.joined(separator: ", "))
+        """
+    }
+    
+    private func buildComprehensiveContextWithMemory(memoryResults: MemorySearchResult) async -> String {
+        var baseContext = await buildComprehensiveContext()
+        
+        guard !memoryResults.relatedSessions.isEmpty else {
+            return baseContext
+        }
+        
+        var context = "🧠 RELEVANT PREVIOUS CONVERSATIONS:\n\n"
+        
+        for (index, session) in memoryResults.relatedSessions.enumerated() {
+            context += "📋 SESSION \(index + 1): \(session.title)\n"
+            context += "📅 Date: \(session.date.formatted(date: .abbreviated, time: .shortened))\n"
             
-            // Small delay to ensure clean transition
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-                self?.startNewChunk()
+            if !session.attendees.isEmpty {
+                context += "👥 Attendees: \(session.attendees.joined(separator: ", "))\n"
             }
-        } else {
-            // Recording session complete
-            isRecording = false
-            print("🎉 Recording session completed with \(recordingChunks.count) chunks")
-            print("📊 Total duration: \(formattedSessionDuration)")
-        }
-    }
-    
-    func stopRecording() {
-        guard isRecording else {
-            print("⚠️ Not currently recording")
-            return
-        }
-        
-        // Finish current chunk without starting next
-        finishCurrentChunk(startNext: false)
-        
-        // Deactivate audio session
-        try? AVAudioSession.sharedInstance().setActive(false)
-        
-        print("🏁 Recording session stopped")
-        saveChunksMetadata()
-    }
-    
-    func toggleRecording() {
-        if isRecording {
-            stopRecording()
-        } else {
-            startRecording()
-        }
-    }
-    
-    // MARK: - Chunk Processing
-    
-    func processAllChunks() async -> [String] {
-        guard !recordingChunks.isEmpty else {
-            print("⚠️ No chunks to process")
-            return []
-        }
-        
-        isProcessingChunks = true
-        var transcriptions: [String] = []
-        
-        print("🔄 Processing \(recordingChunks.count) audio chunks...")
-        
-        for (index, chunk) in recordingChunks.enumerated() {
-            do {
-                print("📝 Transcribing chunk \(chunk.number) (\(index + 1)/\(recordingChunks.count))...")
-                
-                // Use RealAIService for transcription
-                let aiService = RealAIService()
-                let transcription = try await aiService.transcribeAudio(audioURL: chunk.url)
-                
-                transcriptions.append(transcription)
-                print("✅ Chunk \(chunk.number) transcribed: \(transcription.prefix(100))...")
-                
-            } catch {
-                print("❌ Failed to transcribe chunk \(chunk.number): \(error)")
-                transcriptions.append("[Transcription failed for chunk \(chunk.number)]")
+            
+            context += "📝 Type: \(session.type.rawValue)\n"
+            
+            // Include key notes and decisions
+            if !session.notes.isEmpty {
+                context += "💡 Key Points:\n"
+                for note in session.notes.prefix(2) {
+                    context += "  • \(note.title): \(note.content.prefix(100))...\n"
+                }
             }
+            
+            // Include action items
+            let actionItems = session.notes.flatMap { $0.actionItems }
+            if !actionItems.isEmpty {
+                context += "✅ Actions: \(actionItems.prefix(2).map { $0.title }.joined(separator: ", "))\n"
+            }
+            
+            context += "\n"
         }
         
-        isProcessingChunks = false
-        print("🎉 All chunks processed!")
-        
-        return transcriptions
-    }
-    
-    func getCombinedTranscription() async -> String {
-        let transcriptions = await processAllChunks()
-        
-        let combined = transcriptions.enumerated().map { index, text in
-            let chunkNumber = index + 1
-            return "--- Chunk \(chunkNumber) ---\n\(text)"
-        }.joined(separator: "\n\n")
-        
-        return combined
-    }
-    
-    // MARK: - Private Setup Methods
-    
-    private func setupAudioSession() throws {
-        let audioSession = AVAudioSession.sharedInstance()
-        
-        try audioSession.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker])
-        try audioSession.setActive(true)
-        
-        print("🔊 Audio session configured")
-    }
-    
-    private func setupRecorder(chunkNumber: Int) throws {
-        // Create unique filename for chunk
-        let timestamp = DateFormatter.fileTimestamp.string(from: Date())
-        let filename = "chunk_\(chunkNumber)_\(timestamp).m4a"
-        
-        // Get documents directory
-        let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        currentRecordingURL = documentsPath.appendingPathComponent(filename)
-        
-        guard let url = currentRecordingURL else {
-            throw RecordingError.fileCreationFailed
+        // Include memory connections
+        if !memoryResults.connections.isEmpty {
+            context += "🔗 MEMORY CONNECTIONS:\n"
+            for connection in memoryResults.connections.prefix(3) {
+                context += "• \(connection.connectionType.rawValue): Connection between related sessions\n"
+            }
+            context += "\n"
         }
         
-        // Audio settings optimized for speech
-        let settings: [String: Any] = [
-            AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
-            AVSampleRateKey: 44100.0,
-            AVNumberOfChannelsKey: 1,
-            AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
-        ]
-        
-        audioRecorder = try AVAudioRecorder(url: url, settings: settings)
-        audioRecorder?.delegate = self
-        audioRecorder?.isMeteringEnabled = true
-        audioRecorder?.prepareToRecord()
-        
-        print("📱 Recorder setup for chunk \(chunkNumber)")
+        context += "You have access to these conversations and can reference specific details from them.\n"
+        return context
     }
     
-    // MARK: - Timer Management
-    
-    private func startTimers() {
-        // Main duration timer (updates every 0.1 seconds)
-        recordingTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
-            self?.updateDurations()
+    private func buildDocumentContext() async -> String {
+        let recentDocs = Array(documentManager.documents.suffix(3))
+        guard !recentDocs.isEmpty else {
+            return "No documents available"
         }
         
-        // Chunk timer (triggers every 10 minutes)
-        chunkTimer = Timer.scheduledTimer(withTimeInterval: chunkDurationSeconds, repeats: true) { [weak self] _ in
-            self?.handleChunkTimeout()
+        var context = "AVAILABLE DOCUMENTS:\n"
+        
+        for doc in recentDocs {
+            context += "\n📄 \(doc.title):\n"
+            
+            if !doc.businessInsights.isEmpty {
+                context += "💡 INSIGHTS:\n"
+                for (index, insight) in doc.businessInsights.enumerated() {
+                    context += "\(index + 1). \(insight)\n"
+                }
+                context += "\n"
+            }
+            
+            if !doc.actionItems.isEmpty {
+                context += "📋 ACTION ITEMS:\n"
+                for (index, action) in doc.actionItems.enumerated() {
+                    context += "\(index + 1). \(action)\n"
+                }
+                context += "\n"
+            }
+            
+            if let extractedText = doc.extractedText, !extractedText.isEmpty {
+                context += "📖 DOCUMENT CONTENT:\n\(extractedText.prefix(1500))\n\n"
+            }
+            
+            context += "---\n\n"
         }
-    }
-    
-    private func stopTimers() {
-        recordingTimer?.invalidate()
-        recordingTimer = nil
         
-        chunkTimer?.invalidate()
-        chunkTimer = nil
+        context += "User can reference any specific insights, action items, or content from these documents.\n"
+        return context
     }
     
-    private func updateDurations() {
-        guard let startTime = startTime,
-              let sessionStart = sessionStartTime else { return }
+    private func buildSessionContext() async -> String {
+        let recentSessions = Array(sessionManager.sessions.suffix(3))
+        guard !recentSessions.isEmpty else {
+            return "No recent sessions"
+        }
         
-        chunkDuration = Date().timeIntervalSince(startTime)
-        recordingDuration = Date().timeIntervalSince(sessionStart)
+        var context = "RECENT SESSIONS:\n"
+        for session in recentSessions {
+            context += """
+            📋 \(session.title) (\(session.type.rawValue)):
+              Priority: \(session.priority.rawValue)
+              Notes: \(session.notes.count) items
+              Action Items: \(session.notes.flatMap { $0.actionItems }.count)
+            
+            """
+        }
+        return context
     }
     
-    private func handleChunkTimeout() {
-        print("⏰ Chunk timeout reached - switching to next chunk")
-        finishCurrentChunk(startNext: true)
-    }
-    
-    // MARK: - File Management
-    
-    private func getFileSize(url: URL) -> Int {
+    private func buildContextualWelcome(profile: FounderProfile, context: String) async -> String {
+        let contextPrompt = """
+        Generate a personalized welcome message for:
+        - \(profile.founderName), \(profile.founderRole) at \(profile.businessName ?? "their company")
+        - Industry: \(profile.industry)
+        - Stage: \(profile.businessStage.rawValue)
+        - Current challenges: \(profile.currentChallenges.joined(separator: ", "))
+        
+        Be proactive and reference their specific business context. Ask about their most pressing current priority.
+        Keep it under 3 sentences and be direct.
+        """
+        
         do {
-            let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
-            return attributes[.size] as? Int ?? 0
+            return try await realAIService.generateCoachingResponse(prompt: contextPrompt)
         } catch {
-            return 0
+            return "Hello \(profile.founderName). What's the most critical business challenge you're facing right now?"
         }
     }
     
-    private func saveChunksMetadata() {
-        // Save chunk metadata for potential recovery
-        if let data = try? JSONEncoder().encode(recordingChunks) {
-            let metadataURL = getDocumentsDirectory().appendingPathComponent("chunks_metadata.json")
-            try? data.write(to: metadataURL)
-            print("💾 Saved chunks metadata")
-        }
-    }
+    // MARK: - DUAL-MODE Contextual Prompt Building (ENHANCED with Memory)
     
-    private func loadExistingChunks() {
-        let metadataURL = getDocumentsDirectory().appendingPathComponent("chunks_metadata.json")
+    private func buildContextualPrompt(userInput: String, context: String, memoryResults: MemorySearchResult) -> String {
         
-        if let data = try? Data(contentsOf: metadataURL),
-           let chunks = try? JSONDecoder().decode([RecordingChunk].self, from: data) {
-            recordingChunks = chunks
-            print("📂 Loaded \(chunks.count) existing chunks")
-        }
-    }
-    
-    private func getDocumentsDirectory() -> URL {
-        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-    }
-    
-    func deleteRecording(at url: URL) {
-        do {
-            try FileManager.default.removeItem(at: url)
-            print("🗑️ Deleted recording: \(url.lastPathComponent)")
-        } catch {
-            print("❌ Failed to delete recording: \(error)")
-        }
-    }
-    
-    func deleteAllChunks() {
-        for chunk in recordingChunks {
-            deleteRecording(at: chunk.url)
-        }
-        recordingChunks.removeAll()
+        // Detect interaction type
+        let interactionType = detectInteractionType(userInput)
+        let relationshipLevel = calculateCurrentRelationshipLevel()
         
-        // Delete metadata
-        let metadataURL = getDocumentsDirectory().appendingPathComponent("chunks_metadata.json")
-        try? FileManager.default.removeItem(at: metadataURL)
+        let basePrompt = """
+        You are an executive AI coach with deep knowledge of this founder's business context:
         
-        print("🗑️ Deleted all recording chunks")
-    }
-    
-    // MARK: - Error Handling
-    
-    private func handleError(_ error: Error) {
-        Task { @MainActor in
-            isRecording = false
-            stopTimers()
+        \(context)
+        
+        CONVERSATION HISTORY (Last 3 turns):
+        \(conversationHistory.suffix(3).map { "User: \($0.userInput)\nAI: \($0.aiResponse)" }.joined(separator: "\n\n"))
+        
+        RELATIONSHIP LEVEL: \(relationshipLevel.rawValue)
+        USER INPUT: "\(userInput)"
+        """
+        
+        // Switch response mode based on request type
+        switch interactionType {
+        case .assistant:
+            return basePrompt + """
             
-            if let recordingError = error as? RecordingError {
-                errorMessage = recordingError.localizedDescription
-            } else {
-                errorMessage = "Recording failed: \(error.localizedDescription)"
-            }
+            📋 ASSISTANT MODE: Direct information delivery requested.
+            Provide factual, structured information with specific recommendations.
+            Include relevant data points and actionable next steps.
+            Keep response under 150 words, well-organized with bullet points if helpful.
+            """
             
-            print("❌ Recording error: \(error)")
+        case .mentor:
+            return basePrompt + """
+            
+            🎯 MENTOR MODE: Coaching and guidance requested.
+            Ask probing questions to understand the deeper situation.
+            Provide strategic perspective and help them think through challenges.
+            Be supportive but challenge their thinking when appropriate.
+            Keep response conversational, under 100 words.
+            """
         }
     }
-}
-
-// MARK: - AVAudioRecorderDelegate
-
-extension AudioRecorder: AVAudioRecorderDelegate {
     
-    func audioRecorderDidFinishRecording(_ recorder: AVAudioRecorder, successfully flag: Bool) {
-        print("🎤 Chunk recording finished successfully: \(flag)")
+    // MARK: - Helper Methods
+    
+    private func updateProactiveInsights(from turn: SimpleConversationTurn) async {
+        print("🤖 [CONVERSATION] Updating proactive insights from latest turn")
         
-        if !flag {
-            Task { @MainActor in
-                self.errorMessage = "Chunk recording failed to complete"
-            }
-        }
+        let insight = ProactiveInsight( // Now in scope!
+            type: .recommendation,
+            message: "New conversation pattern detected from recent interaction",
+            priority: .medium
+        )
+        proactiveInsights.append(insight)
     }
     
-    func audioRecorderEncodeErrorDidOccur(_ recorder: AVAudioRecorder, error: Error?) {
-        print("❌ Recording encode error: \(error?.localizedDescription ?? "Unknown")")
+    private func detectInteractionType(_ input: String) -> InteractionType {
+        let lower = input.lowercased()
         
-        Task { @MainActor in
-            self.handleError(error ?? RecordingError.encodingFailed)
+        // Assistant triggers - direct information requests
+        if lower.contains("what is") || lower.contains("how do") || lower.contains("show me") ||
+           lower.contains("list") || lower.contains("find") || lower.contains("search") ||
+           lower.contains("calculate") || lower.contains("analyze") {
+            return .assistant
+        }
+        
+        // Mentor triggers - guidance and coaching requests
+        if lower.contains("should i") || lower.contains("help me") || lower.contains("advice") ||
+           lower.contains("what would you do") || lower.contains("stuck") || lower.contains("challenge") {
+            return .mentor
+        }
+        
+        // Default to mentor for relationship building
+        return .mentor
+    }
+    
+    private func calculateCurrentRelationshipLevel() -> CoachingRelationshipLevel {
+        let turnCount = conversationHistory.count
+        
+        switch turnCount {
+        case 0...5: return .initial
+        case 6...15: return .exploring
+        case 16...30: return .understanding
+        default: return .intimate
         }
     }
-}
-
-// MARK: - Recording Chunk Model
-
-struct RecordingChunk: Codable, Identifiable {
-    let id = UUID()
-    let number: Int
-    let url: URL
-    let duration: TimeInterval
-    let fileSize: Int
-    let timestamp: Date
     
-    var formattedDuration: String {
-        let minutes = Int(duration) / 60
-        let seconds = Int(duration) % 60
-        return String(format: "%02d:%02d", minutes, seconds)
+    private func extractKeyTerms(from text: String) -> [String] {
+        let words = text.lowercased()
+            .components(separatedBy: CharacterSet.whitespacesAndNewlines.union(.punctuationCharacters))
+            .filter { $0.count > 3 }
+            .filter { !["that", "this", "with", "have", "been", "will", "from", "they"].contains($0) }
+        
+        return Array(Set(words)) // Remove duplicates
     }
     
-    var formattedFileSize: String {
-        let mb = Double(fileSize) / (1024 * 1024)
-        return String(format: "%.1f MB", mb)
-    }
-    
-    var isValidSize: Bool {
-        return fileSize < 20_000_000 // 20MB safety limit
-    }
-}
-
-// MARK: - Recording Errors
-
-enum RecordingError: Error, LocalizedError {
-    case permissionDenied
-    case setupFailed
-    case fileCreationFailed
-    case recordingFailed
-    case encodingFailed
-    case chunkSizeExceeded
-    
-    var errorDescription: String? {
-        switch self {
-        case .permissionDenied:
-            return "Microphone permission denied"
-        case .setupFailed:
-            return "Failed to setup audio recorder"
-        case .fileCreationFailed:
-            return "Failed to create recording file"
-        case .recordingFailed:
-            return "Recording failed to start"
-        case .encodingFailed:
-            return "Audio encoding failed"
-        case .chunkSizeExceeded:
-            return "Recording chunk exceeded size limit"
+    private func generateProactiveInsights(from response: String, context: String) async -> [ProactiveInsight] {
+        // Generate insights based on the conversation
+        var insights: [ProactiveInsight] = []
+        
+        if response.contains("action") {
+            insights.append(ProactiveInsight( // Now in scope!
+                type: .recommendation,
+                message: "Consider documenting this action item for follow-up",
+                priority: .medium
+            ))
         }
+        
+        if response.contains("meeting") || response.contains("discuss") {
+            insights.append(ProactiveInsight( // Now in scope!
+                type: .recommendation,
+                message: "This might benefit from a structured agenda",
+                priority: .medium
+            ))
+        }
+        
+        return insights
     }
-}
-
-// MARK: - DateFormatter Extension
-
-private extension DateFormatter {
-    static let fileTimestamp: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyyMMdd_HHmmss"
-        return formatter
-    }()
+    
+    private func MybuildInitialContext() async {
+        currentContext = await buildComprehensiveContext()
+        print("🤖 [CONVERSATION] Initial context built")
+    }
 }

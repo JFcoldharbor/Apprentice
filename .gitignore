@@ -1,0 +1,12 @@
+# Secrets — real API keys live here, NEVER committed
+Secrets.plist
+
+# Xcode / build artifacts
+xcuserdata/
+*.xcuserstate
+DerivedData/
+build/
+*.xcscmblueprint
+
+# macOS
+.DS_Store

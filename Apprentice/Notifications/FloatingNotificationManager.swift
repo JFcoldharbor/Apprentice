@@ -179,14 +179,14 @@ class FloatingNotificationManager: ObservableObject {
             let recentSessions = sessionManager.sessions.suffix(3)
             
             for session in recentSessions {
-                if session.needsEmailSummary && emailService.canSendEmail() {
+                if session.needsEmailSummary && emailService.canSendEmail {
                     createEmailNotification(for: session)
                 }
             }
         }
         
         // Check for email configuration issues
-        if !emailService.canSendEmail() {
+        if !emailService.canSendEmail {
             createEmailConfigNotification()
         }
     }

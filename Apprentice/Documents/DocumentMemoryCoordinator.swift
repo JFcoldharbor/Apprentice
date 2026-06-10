@@ -1,17 +1,9 @@
 //
-//  UnifiedDocumentContext.swift
+//  DocumentMemoryCoordinator.swift
 //  Apprentice
 //
-//  Created by James Garmon on 8/26/25.
-//
-
-
-//
-//  DocumentMemoryCoordinator.swift
-//  Stitch Executive AI
-//
 //  Layer 5: Business Logic - Document-Memory Integration System
-//  FIXED: Using SafeDocumentManager with UnifiedDocumentContext model
+//  FIXED: ProcessedDocument references and CharacterSet import
 //
 
 import Foundation
@@ -57,11 +49,17 @@ class DocumentMemoryCoordinator: ObservableObject {
     @Published var documentInsights: [SimpleDocumentInsight] = []
     @Published var documentConnections: [SimpleDocumentConnection] = []
     @Published var isAnalyzing = false
-    @Published var lastProcessedDocument: SafeDocumentManager.ProcessedDocument?
+    @Published var lastProcessedDocument: ProcessedDocument?
+    
+    // MARK: - Initialization
+    
+    init() {
+        print("[DOC-MEMORY] Document Memory Coordinator initialized")
+    }
     
     // MARK: - Main Integration Methods
     
-    func processDocumentForUnifiedMemory(_ document: SafeDocumentManager.ProcessedDocument) async {
+    func processDocumentForUnifiedMemory(_ document: ProcessedDocument) async {
         print("[DOC-MEMORY] Processing document for unified memory integration: \(document.title)")
         
         isAnalyzing = true
@@ -129,7 +127,7 @@ class DocumentMemoryCoordinator: ObservableObject {
     
     // MARK: - Private Implementation Methods
     
-    private func extractBusinessIntelligence(from document: SafeDocumentManager.ProcessedDocument) -> SimpleDocumentInsight {
+    private func extractBusinessIntelligence(from document: ProcessedDocument) -> SimpleDocumentInsight {
         return SimpleDocumentInsight(
             id: UUID(),
             documentId: document.id,
@@ -141,7 +139,7 @@ class DocumentMemoryCoordinator: ObservableObject {
         )
     }
     
-    private func findSessionConnections(for document: SafeDocumentManager.ProcessedDocument, insight: SimpleDocumentInsight) async -> [SimpleDocumentConnection] {
+    private func findSessionConnections(for document: ProcessedDocument, insight: SimpleDocumentInsight) async -> [SimpleDocumentConnection] {
         let sessions = sessionManager.sessions
         var connections: [SimpleDocumentConnection] = []
         
@@ -166,43 +164,46 @@ class DocumentMemoryCoordinator: ObservableObject {
         return connections
     }
     
-    private func extractKeywords(from document: SafeDocumentManager.ProcessedDocument) -> [String] {
+    private func extractKeywords(from document: ProcessedDocument) -> [String] {
         var keywords: [String] = []
         
         // Extract from title
-        keywords.append(contentsOf: document.title.components(separatedBy: .whitespacesAndNewlines))
+        keywords.append(contentsOf: document.title.components(separatedBy: CharacterSet.whitespacesAndNewlines))
         
         // Extract from insights
         for insight in document.businessInsights {
-            keywords.append(contentsOf: insight.components(separatedBy: .whitespacesAndNewlines))
+            keywords.append(contentsOf: insight.components(separatedBy: CharacterSet.whitespacesAndNewlines))
         }
         
         // Extract from action items
         for actionItem in document.actionItems {
-            keywords.append(contentsOf: actionItem.components(separatedBy: .whitespacesAndNewlines))
+            keywords.append(contentsOf: actionItem.components(separatedBy: CharacterSet.whitespacesAndNewlines))
         }
         
         // Clean and filter keywords
         return keywords
-            .map { $0.lowercased().trimmingCharacters(in: .punctuationCharacters) }
+            .map { $0.lowercased().trimmingCharacters(in: CharacterSet.punctuationCharacters) }
             .filter { $0.count > 2 }
-            .filter { !["the", "and", "for", "are", "but", "not", "you", "all", "can", "her", "was", "one", "our", "had", "have", "this", "that", "from", "they", "know", "want", "been", "good", "much", "some", "time", "very", "when", "come", "here", "just", "like", "long", "make", "many", "over", "such", "take", "than", "them", "well", "were"].contains($0) }
+            .filter { !commonWords.contains($0) }
     }
     
     private func extractSessionKeywords(from session: ExecutiveSession) -> [String] {
         var keywords: [String] = []
         
-        keywords.append(contentsOf: session.title.components(separatedBy: .whitespacesAndNewlines))
+        // Extract from session title
+        keywords.append(contentsOf: session.title.components(separatedBy: CharacterSet.whitespacesAndNewlines))
         
+        // Extract from notes
         for note in session.notes {
-            keywords.append(contentsOf: note.title.components(separatedBy: .whitespacesAndNewlines))
-            keywords.append(contentsOf: note.content.components(separatedBy: .whitespacesAndNewlines))
+            keywords.append(contentsOf: note.title.components(separatedBy: CharacterSet.whitespacesAndNewlines))
+            keywords.append(contentsOf: note.content.components(separatedBy: CharacterSet.whitespacesAndNewlines))
         }
         
+        // Clean and filter keywords
         return keywords
-            .map { $0.lowercased().trimmingCharacters(in: .punctuationCharacters) }
+            .map { $0.lowercased().trimmingCharacters(in: CharacterSet.punctuationCharacters) }
             .filter { $0.count > 2 }
-            .filter { !["the", "and", "for", "are", "but", "not", "you", "all", "can", "her", "was", "one", "our", "had", "have", "this", "that", "from", "they", "know", "want", "been", "good", "much", "some", "time", "very", "when", "come", "here", "just", "like", "long", "make", "many", "over", "such", "take", "than", "them", "well", "were"].contains($0) }
+            .filter { !commonWords.contains($0) }
     }
     
     private func calculateSimilarity(_ keywords1: [String], _ keywords2: [String]) -> Double {
@@ -214,8 +215,8 @@ class DocumentMemoryCoordinator: ObservableObject {
         return union.isEmpty ? 0.0 : Double(intersection.count) / Double(union.count)
     }
     
-    private func convertToBusinessDocument(_ processedDoc: SafeDocumentManager.ProcessedDocument) -> BusinessDocument {
-        // Convert SafeDocumentManager.ProcessedDocument to BusinessDocument for compatibility
+    private func convertToBusinessDocument(_ processedDoc: ProcessedDocument) -> BusinessDocument {
+        // Convert ProcessedDocument to BusinessDocument for compatibility
         return BusinessDocument(
             id: processedDoc.id,
             title: processedDoc.title,
@@ -236,6 +237,14 @@ class DocumentMemoryCoordinator: ObservableObject {
         // Trigger memory system to refresh with new document context
         print("[DOC-MEMORY] Triggering unified memory refresh")
     }
+    
+    // MARK: - Common Words Filter
+    
+    private let commonWords = [
+        "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for", "of", "with", "by",
+        "is", "are", "was", "were", "be", "been", "have", "has", "had", "do", "does", "did",
+        "will", "would", "could", "should", "can", "may", "might", "this", "that", "these", "those"
+    ]
 }
 
 // MARK: - Simplified Models

@@ -56,10 +56,10 @@ enum OnboardingStep: Int, CaseIterable {
 struct OnboardingFormData {
     var founderName: String = ""
     var businessName: String = ""
-    var industry: String = "Technology"
+    var industry: String = ""
     var businessStage: FounderProfile.BusinessStage = .earlyStage
-    var founderRole: String = "CEO"
-    var yearsOfExperience: Int = 5
+    var founderRole: String = ""
+    var yearsOfExperience: Int = 0
     
     // Validation
     var isPersonalInfoValid: Bool {
@@ -184,56 +184,57 @@ class OnboardingCoordinator: ObservableObject {
     }
     
     // MARK: - Profile Creation
-    
-    func createProfile() {
-        guard canProceedToNextStep else {
-            setError("Please complete all required fields")
-            return
-        }
-        
-        isProcessing = true
-        clearError()
-        
-        Task {
-            do {
-                // Validate form data
-                try validateFormData()
-                
-                // Create profile using existing FounderProfileManager
-                await MainActor.run {
-                    profileManager.createProfile(
-                        founderName: formData.founderName.trimmingCharacters(in: .whitespacesAndNewlines),
-                        businessName: formData.businessName.isEmpty ? nil : formData.businessName.trimmingCharacters(in: .whitespacesAndNewlines),
-                        businessStage: formData.businessStage,
-                        industry: formData.industry,
-                        founderRole: formData.founderRole,
-                        yearsOfExperience: formData.yearsOfExperience
-                    )
-                    
-                    profileManager.completeOnboarding()
-                }
-                
-                // Check if profile creation was successful
-                await MainActor.run {
-                    if let profileError = profileManager.errorMessage {
-                        self.setError(profileError)
-                    } else {
-                        self.isComplete = true
-                        print("âœ… [ONBOARDING] Profile created successfully")
-                    }
-                    
-                    self.isProcessing = false
-                }
-                
-            } catch {
-                await MainActor.run {
-                    self.setError(error.localizedDescription)
-                    self.isProcessing = false
-                }
-            }
-        }
-    }
-    
+       
+       func createProfile() {
+           guard canProceedToNextStep else {
+               setError("Please complete all required fields")
+               return
+           }
+           
+           isProcessing = true
+           clearError()
+           
+           Task {
+               do {
+                   // Validate form data
+                   try validateFormData()
+                   
+                   // Create profile using existing FounderProfileManager
+                   await MainActor.run {
+                       profileManager.createProfile(
+                           founderName: formData.founderName.trimmingCharacters(in: .whitespacesAndNewlines),
+                           businessName: formData.businessName.isEmpty ? nil : formData.businessName.trimmingCharacters(in: .whitespacesAndNewlines),
+                           businessStage: formData.businessStage,
+                           industry: formData.industry,
+                           founderRole: formData.founderRole,
+                           yearsOfExperience: formData.yearsOfExperience
+                       )
+                       
+                       // Mark onboarding as complete directly
+                       UserDefaults.standard.set(true, forKey: "onboarding_completed")
+                   }
+                   
+                   // Check if profile creation was successful
+                   await MainActor.run {
+                       // Check if profile was created successfully by checking if it exists
+                       if profileManager.founderProfile != nil {
+                           self.isComplete = true
+                           print("✅ [ONBOARDING] Profile created successfully")
+                       } else {
+                           self.setError("Failed to create profile")
+                       }
+                       
+                       self.isProcessing = false
+                   }
+                   
+               } catch {
+                   await MainActor.run {
+                       self.setError(error.localizedDescription)
+                       self.isProcessing = false
+                   }
+               }
+           }
+       }
     // MARK: - Validation
     
     private func validateFormData() throws {
@@ -267,10 +268,10 @@ class OnboardingCoordinator: ObservableObject {
     
     private func setError(_ message: String) {
         errorMessage = message
-        print("âŒ [ONBOARDING] Error: \(message)")
+        print("❌ [ONBOARDING] Error: \(message)")
     }
     
-    private func BigclearError() {
+    private func MyclearError() {
         errorMessage = nil
     }
     
@@ -282,18 +283,6 @@ class OnboardingCoordinator: ObservableObject {
         isProcessing = false
         errorMessage = nil
         isComplete = false
-    }
-    
-    // MARK: - Debug Helpers
-    
-    func createMockProfile() {
-        formData.founderName = "Alex Thompson"
-        formData.businessName = "InnovateTech Solutions"
-        formData.industry = "Technology"
-        formData.businessStage = .growth
-        formData.founderRole = "CEO & Founder"
-        formData.yearsOfExperience = 8
-        createProfile()
     }
 }
 

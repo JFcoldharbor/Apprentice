@@ -2,15 +2,8 @@
 //  Config.swift
 //  Apprentice
 //
-//  Created by James Garmon on 8/26/25.
-//
-
-
-//
-//  Config.swift
-//  Stitch Executive AI
-//
-//  Created by James Garmon on 8/21/25.
+//  Layer 1: Foundation - Complete app configuration (UPDATED)
+//  Added missing document processing constants for NotebookLM-style functionality
 //
 
 import Foundation
@@ -24,7 +17,8 @@ struct Config {
 
     struct OpenAI {
         static var apiKey: String {
-            ProcessInfo.processInfo.environment["OPENAI_API_KEY"] ?? ""
+            // Read from config (env var or Info.plist OPENAI_API_KEY) — not hardcoded.
+            Secrets.openAIKey
         }
 
         static let baseURL = "https://api.openai.com/v1"
@@ -32,7 +26,9 @@ struct Config {
 
         struct Prompt {
             static var id: String {
-                ProcessInfo.processInfo.environment["OPENAI_PROMPT_ID"] ?? ""
+                // Try environment variable first, fallback to hardcoded for development
+                ProcessInfo.processInfo.environment["OPENAI_PROMPT_ID"] ??
+                "pmpt_689421179cc88196bcf771e8e5aaf1c70eb96f4c3826712c"
             }
 
             static var version: String {
@@ -44,18 +40,8 @@ struct Config {
             static let model = "whisper-1"
             static let responseFormat = "json"
             static let temperature: Double = 0.0
-            static let language: String? = "en"
-            static let timeout: TimeInterval = 60.0
-        }
-
-        struct Chat {
-            static let model = "gpt-4"
-            static let maxTokens = 2000
-            static let temperature: Double = 0.7
-            static let topP: Double = 1.0
-            static let presencePenalty: Double = 0.0
-            static let frequencyPenalty: Double = 0.0
-            static let timeout: TimeInterval = 45.0
+            static let language: String? = nil
+            static let prompt: String? = nil
         }
 
         struct TTS {
@@ -63,164 +49,32 @@ struct Config {
             static let voice = "nova"
             static let responseFormat = "mp3"
             static let speed: Double = 1.0
-            static let timeout: TimeInterval = 30.0
+        }
+
+        struct GPT {
+            static let model = "gpt-4"
+            static let maxTokens = 4000
+            static let temperature: Double = 0.7
+            static let topP: Double = 1.0
+            static let presencePenalty: Double = 0.0
+            static let frequencyPenalty: Double = 0.0
+            static let enableFunctionCalling = true
+        }
+
+        struct Embeddings {
+            static let model = "text-embedding-3-small"
+            static let dimensions: Int? = nil
+            static let encodingFormat = "float"
+            static let batchSize = 100
         }
     }
 
-    
-    // MARK: - Audio Configuration
-    
-    struct Audio {
-        static let sampleRate: Double = 44100.0
-        static let channels: UInt32 = 1
-        static let bitDepth: UInt32 = 16
-        static let quality: AVAudioQuality = .high
-        static let maxRecordingDuration: TimeInterval = 3600.0
-        static let chunkDuration: TimeInterval = 30.0
-        
-        static let recordingSettings: [String: Any] = [
-            AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
-            AVSampleRateKey: sampleRate,
-            AVNumberOfChannelsKey: channels,
-            AVEncoderAudioQualityKey: quality.rawValue
-        ]
-    }
-    
-    // MARK: - Business Intelligence Configuration
-    
-    struct BusinessIntelligence {
-        static let enableRealTimeAnalysis = true
-        static let memoryRetentionDays = 90
-        static let maxSessionsForPatternDetection = 50
-        static let insightGenerationThreshold = 3
-        static let actionItemPriorityThreshold = 0.7
-        static let urgentAlertThreshold = 0.9
-        
-        static let maxContextTokens = 8000
-        static let contextCompressionRatio = 0.7
-        static let enableContextualMemory = true
-        static let maxMemoryConnections = 10
-    }
-    
-    // MARK: - Onboarding Configuration
-    
-    struct Onboarding {
-        static let totalMilestones = 7
-        static let enableProgressPersistence = true
-        static let autoSaveInterval: TimeInterval = 30.0
-        static let conversationTimeout: TimeInterval = 300.0
-        static let maxRetryAttempts = 3
-        
-        enum Stage: String, CaseIterable, Codable {
-            case welcome = "Welcome"
-            case purpose = "Purpose & Vision"
-            case business = "Business Model"
-            case background = "Founder Background"
-            case market = "Market Position"
-            case challenges = "Current Challenges"
-            case goals = "Goals & Objectives"
-            
-            var milestone: Int {
-                return Self.allCases.firstIndex(of: self) ?? 0
-            }
-            
-            var description: String {
-                switch self {
-                case .welcome:
-                    return "Introduction and relationship building"
-                case .purpose:
-                    return "Core mission, vision, and company purpose"
-                case .business:
-                    return "Business model, value proposition, revenue streams"
-                case .background:
-                    return "Founder's journey, expertise, and motivations"
-                case .market:
-                    return "Market position, competition, customer segments"
-                case .challenges:
-                    return "Current obstacles and pain points"
-                case .goals:
-                    return "Strategic objectives and success metrics"
-                }
-            }
-        }
-    }
-    
-    // MARK: - Session Management
-    
-    struct Sessions {
-        static let maxStoredSessions = 1000
-        static let autoDeleteAfterDays = 365
-        static let enableAutoBackup = true
-        static let backupInterval: TimeInterval = 86400.0
-        static let enableCloudSync = false
-        
-        static let enableChunkedProcessing = true
-        static let maxChunkSize = 30.0
-        static let parallelProcessingEnabled = true
-        static let maxConcurrentChunks = 3
-    }
-    
-    // MARK: - UI Configuration
-    
-    struct UI {
-        static let primaryBlue = "BusinessBlue"
-        static let executiveGold = "ExecutiveGold"
-        static let successGreen = "ProfitGreen"
-        static let warningOrange = "CautionOrange"
-        static let errorRed = "AlertRed"
-        static let coachingPurple = "MentorPurple"
-        static let onboardingCyan = "FounderCyan"
-        
-        static let standardAnimation = 0.3
-        static let quickAnimation = 0.15
-        static let slowAnimation = 0.6
-        static let springDamping = 0.7
-        static let springResponse = 0.5
-        
-        static let enableVoiceOver = true
-        static let enableReducedMotion = true
-        static let minimumTapTarget: CGFloat = 44.0
-        static let enableDynamicType = true
-    }
-    
-    // MARK: - Network Configuration
-    
-    struct Network {
-        static let requestTimeout: TimeInterval = 30.0
-        static let uploadTimeout: TimeInterval = 120.0
-        static let downloadTimeout: TimeInterval = 60.0
-        static let retryAttempts = 3
-        static let retryDelay: TimeInterval = 2.0
-        static let enableOfflineQueue = true
-        static let maxOfflineActions = 100
-    }
-    
-    // MARK: - Storage Configuration
-    
-    struct Storage {
-        static let enableAutoSave = true
-        static let autoSaveInterval: TimeInterval = 30.0
-        static let enableVersioning = true
-        static let maxVersions = 10
-        static let enableCompression = true
-        
-        static let sessionsDirectory = "ExecutiveSessions"
-        static let audioDirectory = "Recordings"
-        static let profileDirectory = "FounderProfiles"
-        static let intelligenceDirectory = "BusinessIntelligence"
-        
-        static let onboardingProgressKey = "OnboardingProgress_v2"
-        static let founderProfileKey = "FounderProfile_v2"
-        static let sessionCountKey = "SessionCount_v2"
-        static let lastLaunchKey = "LastLaunch_v2"
-    }
-    
     // MARK: - App Information
     
     struct App {
-        static let name = "Stitch Executive AI"
-        static let shortName = "Stitch AI"
-        static let tagline = "AI-Powered Executive Intelligence"
+        static let name = "Apprentice"
+        static let displayName = "Apprentice AI"
+        static let description = "Executive AI Coach for Business Leaders"
         
         static let version: String = {
             Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0.0"
@@ -293,7 +147,7 @@ struct Config {
         }
     }
     
-    // MARK: - Document Management
+    // MARK: - Document Management (UPDATED)
     
     struct Documents {
         static let maxFileSize: Int64 = 50 * 1024 * 1024 // 50MB
@@ -321,6 +175,12 @@ struct Config {
         static let thumbnailsDirectory = "DocumentThumbnails"
         static let processedDirectory = "ProcessedDocuments"
         static let tempDirectory = "TempDocuments"
+        
+        // ADDED: Missing properties for SafeDocumentManager compatibility
+        static let maxChunkSize = 1500
+        static let chunkOverlap = 200
+        static let maxFileSizeBytes = maxFileSize
+        static let supportedTypes = allSupportedFormats
     }
     
     // MARK: - Vision API Configuration
@@ -335,6 +195,7 @@ struct Config {
         
         static let maxImageDimension: CGFloat = 2048
         static let compressionQuality: CGFloat = 0.85
+        static let visionAPISizeLimit: Int64 = 10 * 1024 * 1024 // 10MB for Vision API
         static let enableBatchProcessing = true
         static let maxBatchSize = 5
         
@@ -447,9 +308,9 @@ extension Config {
                 withIntermediateDirectories: true,
                 attributes: nil
             )
-            print("ðŸ“ Created directory: \(directoryURL.lastPathComponent)")
+            print("📁 Created directory: \(directoryURL.lastPathComponent)")
         } catch {
-            print("âŒ Failed to create directory: \(directoryURL.lastPathComponent) - \(error)")
+            print("❌ Failed to create directory: \(directoryURL.lastPathComponent) - \(error)")
             // Return the base URL as fallback to prevent crashes
             return baseURL
         }
@@ -519,3 +380,6 @@ private extension DateFormatter {
         return formatter
     }()
 }
+
+// MARK: - VisionConfig compatibility handled in VisionDataPoint.swift
+// Note: VisionConfig is already defined in VisionDataPoint.swift to avoid conflicts

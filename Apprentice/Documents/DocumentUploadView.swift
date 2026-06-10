@@ -2,16 +2,8 @@
 //  DocumentUploadView.swift
 //  Apprentice
 //
-//  Created by James Garmon on 8/26/25.
-//
-
-
-//
-//  DocumentUploadView.swift
-//  Stitch Executive AI
-//
-//  Layer 8: Views - Simple document upload interface
-//  FIXED: Updated to use SafeDocumentManager and added ExecutiveSession Hashable conformance
+//  Layer 8: Views - Document upload interface
+//  FIXED: Corrected SafeDocumentManager integration
 //
 
 import SwiftUI
@@ -31,7 +23,7 @@ extension ExecutiveSession: Hashable {
 
 struct DocumentUploadView: View {
     
-    // MARK: - Dependencies - FIXED to use SafeDocumentManager
+    // MARK: - Dependencies - FIXED to use SafeDocumentManager properly
     
     @StateObject private var safeDocumentManager = SafeDocumentManager()
     @EnvironmentObject private var sessionManager: SessionManager
@@ -42,9 +34,12 @@ struct DocumentUploadView: View {
     @State private var showingFilePicker = false
     @State private var showingPhotosPicker = false
     @State private var selectedSession: ExecutiveSession?
-    @State private var uploadedDocuments: [SafeDocumentManager.ProcessedDocument] = []
+    @State private var uploadedDocuments: [ProcessedDocument] = []
     @State private var showingUploadProgress = false
     @State private var customTitle = ""
+    @State private var errorMessage: String?
+    @State private var isSyncingDataRoom = false
+    @State private var dataRoomSyncMessage: String?
     
     var body: some View {
         NavigationView {
@@ -55,9 +50,13 @@ struct DocumentUploadView: View {
                     VStack(spacing: 24) {
                         headerSection
                         uploadOptionsSection
+                        connectedSourcesSection
                         settingsSection
                         if !uploadedDocuments.isEmpty {
                             recentUploadsSection
+                        }
+                        if let error = errorMessage {
+                            errorSection(error)
                         }
                     }
                     .padding(20)
@@ -84,7 +83,7 @@ struct DocumentUploadView: View {
                         handleDocumentUpload(url)
                     }
                 case .failure(let error):
-                    print("File picker error: \(error)")
+                    errorMessage = "File picker error: \(error.localizedDescription)"
                 }
             }
         }
@@ -97,20 +96,30 @@ struct DocumentUploadView: View {
     
     private var headerSection: some View {
         VStack(spacing: 16) {
-            Image(systemName: "doc.badge.plus")
-                .font(.system(size: 60))
-                .foregroundColor(.cyan)
-            
-            Text("Add Business Documents")
-                .font(.title2)
-                .fontWeight(.bold)
-                .foregroundColor(.white)
-            
-            Text("Upload images, PDFs, and documents for AI analysis and business intelligence")
-                .font(.subheadline)
-                .foregroundColor(.white.opacity(0.8))
-                .multilineTextAlignment(.center)
-                .padding(.horizontal)
+            // AI Icon and Title
+            HStack(spacing: 16) {
+                Circle()
+                    .fill(.cyan)
+                    .frame(width: 60, height: 60)
+                    .overlay(
+                        Image(systemName: "doc.text.image")
+                            .font(.title2)
+                            .foregroundColor(.white)
+                    )
+                
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Document Intelligence")
+                        .font(.title2)
+                        .fontWeight(.bold)
+                        .foregroundColor(.white)
+                    
+                    Text("Upload documents for AI-powered analysis")
+                        .font(.subheadline)
+                        .foregroundColor(.white.opacity(0.7))
+                }
+                
+                Spacer()
+            }
         }
     }
     
@@ -128,57 +137,101 @@ struct DocumentUploadView: View {
                 GridItem(.flexible())
             ], spacing: 16) {
                 UploadOptionCard(
-                    title: "Camera",
-                    subtitle: "Take photo",
-                    icon: "camera",
-                    color: .blue
-                ) {
-                    // Camera functionality - placeholder
-                    print("Camera upload selected")
-                }
-                
-                UploadOptionCard(
-                    title: "Photo Library",
-                    subtitle: "Choose images",
-                    icon: "photo.on.rectangle",
-                    color: .green
-                ) {
-                    showingPhotosPicker = true
-                }
-                
-                UploadOptionCard(
                     title: "Files",
-                    subtitle: "Browse documents",
-                    icon: "folder",
-                    color: .orange
+                    subtitle: "PDF, Text, Documents",
+                    icon: "doc.text",
+                    color: .cyan
                 ) {
                     showingFilePicker = true
                 }
                 
                 UploadOptionCard(
-                    title: "Scan Document",
-                    subtitle: "Camera scan",
-                    icon: "doc.viewfinder",
-                    color: .purple
+                    title: "Photos",
+                    subtitle: "Scan documents",
+                    icon: "camera",
+                    color: .green
                 ) {
-                    // Document scanner functionality - placeholder
-                    print("Document scanner selected")
+                    showingPhotosPicker = true
                 }
             }
         }
     }
     
+    // MARK: - Connected Sources Section
+
+    private var connectedSourcesSection: some View {
+        VStack(spacing: 16) {
+            Text("Connected Sources")
+                .font(.headline)
+                .foregroundColor(.white)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            Button {
+                syncDataRoom()
+            } label: {
+                HStack(spacing: 16) {
+                    Image(systemName: "building.columns")
+                        .font(.system(size: 26))
+                        .foregroundColor(.purple)
+                        .frame(width: 48, height: 48)
+                        .background(.purple.opacity(0.12))
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Investor Data Room")
+                            .font(.headline)
+                            .foregroundColor(.white)
+
+                        Text(isSyncingDataRoom
+                             ? "Syncing… \(Int(safeDocumentManager.processingProgress * 100))%"
+                             : "Pull every document into Aria's memory")
+                            .font(.caption)
+                            .foregroundColor(.white.opacity(0.7))
+                    }
+
+                    Spacer()
+
+                    if isSyncingDataRoom {
+                        ProgressView()
+                            .tint(.purple)
+                    } else {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.title3)
+                            .foregroundColor(.purple)
+                    }
+                }
+                .padding(16)
+                .frame(maxWidth: .infinity)
+                .background(.white.opacity(0.1))
+                .clipShape(RoundedRectangle(cornerRadius: 16))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16)
+                        .stroke(.purple.opacity(0.5), lineWidth: 1)
+                )
+            }
+            .buttonStyle(PlainButtonStyle())
+            .disabled(isSyncingDataRoom)
+
+            if let message = dataRoomSyncMessage {
+                Text(message)
+                    .font(.caption)
+                    .foregroundColor(.green.opacity(0.9))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
     // MARK: - Settings Section
-    
+
     private var settingsSection: some View {
-        VStack(spacing: 20) {
-            Text("Upload Settings")
+        VStack(spacing: 16) {
+            Text("Document Settings")
                 .font(.headline)
                 .foregroundColor(.white)
                 .frame(maxWidth: .infinity, alignment: .leading)
             
-            VStack(spacing: 16) {
-                // Custom Title
+            VStack(alignment: .leading, spacing: 12) {
+                // Custom Title Field
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Custom Title (Optional)")
                         .font(.subheadline)
@@ -186,16 +239,18 @@ struct DocumentUploadView: View {
                     
                     TextField("Enter custom title", text: $customTitle)
                         .textFieldStyle(RoundedBorderTextFieldStyle())
+                        .background(.white.opacity(0.1))
+                        .foregroundColor(.white)
                 }
                 
-                // Session Selection
+                // Session Association
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Link to Session (Optional)")
+                    Text("Associate with Session")
                         .font(.subheadline)
                         .foregroundColor(.white.opacity(0.8))
                     
-                    Picker("Session", selection: $selectedSession) {
-                        Text("No Session").tag(nil as ExecutiveSession?)
+                    Picker("Select Session", selection: $selectedSession) {
+                        Text("None").tag(nil as ExecutiveSession?)
                         ForEach(sessionManager.sessions.prefix(10), id: \.id) { session in
                             Text(session.title).tag(session as ExecutiveSession?)
                         }
@@ -227,6 +282,33 @@ struct DocumentUploadView: View {
         }
     }
     
+    // MARK: - Error Section
+    
+    private func errorSection(_ message: String) -> some View {
+        VStack(spacing: 8) {
+            HStack {
+                Image(systemName: "exclamationmark.triangle")
+                    .foregroundColor(.red)
+                Text("Error")
+                    .font(.headline)
+                    .foregroundColor(.red)
+                Spacer()
+                Button("Dismiss") {
+                    errorMessage = nil
+                }
+                .foregroundColor(.cyan)
+            }
+            
+            Text(message)
+                .font(.subheadline)
+                .foregroundColor(.white.opacity(0.8))
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(16)
+        .background(.red.opacity(0.1))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+    
     // MARK: - Background
     
     private var backgroundGradient: some View {
@@ -245,23 +327,63 @@ struct DocumentUploadView: View {
     
     private func handleDocumentUpload(_ url: URL) {
         showingUploadProgress = true
+        errorMessage = nil
         
         Task {
-            // Use SafeDocumentManager's simple interface
-            let title = customTitle.isEmpty ? nil : customTitle
-            safeDocumentManager.addDocument(url: url, title: title)
-            
-            // Add to recent uploads for display
-            await MainActor.run {
-                loadRecentUploads()
-                showingUploadProgress = false
-                customTitle = ""
+            do {
+                let title = customTitle.isEmpty ? url.deletingPathExtension().lastPathComponent : customTitle
+                
+                // FIXED: Use processDocument instead of addDocument
+                let processedDocument = try await safeDocumentManager.processDocument(url: url)
+                
+                // Add to recent uploads for display
+                await MainActor.run {
+                    loadRecentUploads()
+                    showingUploadProgress = false
+                    customTitle = ""
+                }
+                
+                print("✅ Document processed successfully: \(processedDocument.title)")
+                
+            } catch {
+                await MainActor.run {
+                    showingUploadProgress = false
+                    errorMessage = "Failed to process document: \(error.localizedDescription)"
+                }
+                print("❌ Document processing failed: \(error)")
             }
         }
     }
     
     private func loadRecentUploads() {
         uploadedDocuments = Array(safeDocumentManager.documents.suffix(10))
+    }
+
+    // MARK: - Connected Source Sync (on-demand, no background polling)
+
+    private func syncDataRoom() {
+        guard !isSyncingDataRoom else { return }
+        isSyncingDataRoom = true
+        dataRoomSyncMessage = nil
+        errorMessage = nil
+
+        Task {
+            do {
+                let count = try await safeDocumentManager.syncSource(StitchDataRoomSource())
+                await MainActor.run {
+                    isSyncingDataRoom = false
+                    dataRoomSyncMessage = count > 0
+                        ? "Synced \(count) item\(count == 1 ? "" : "s") from the data room."
+                        : "No documents came back from the data room."
+                    loadRecentUploads()
+                }
+            } catch {
+                await MainActor.run {
+                    isSyncingDataRoom = false
+                    errorMessage = "Data room sync failed: \(error.localizedDescription)"
+                }
+            }
+        }
     }
 }
 
@@ -304,10 +426,10 @@ struct UploadOptionCard: View {
     }
 }
 
-// MARK: - Simple Uploaded Document Card
+// MARK: - Simple Uploaded Document Card - FIXED ProcessedDocument reference
 
 struct SimpleUploadedDocumentCard: View {
-    let document: SafeDocumentManager.ProcessedDocument
+    let document: ProcessedDocument // FIXED: Removed SafeDocumentManager. prefix
     
     var body: some View {
         HStack(spacing: 12) {
@@ -327,7 +449,7 @@ struct SimpleUploadedDocumentCard: View {
                     .foregroundColor(.white)
                     .lineLimit(1)
                 
-                Text("\(formatFileSize(document.fileSize)) â€¢ \(formatDate(document.uploadDate))")
+                Text("\(formatFileSize(document.fileSize)) • \(formatDate(document.uploadDate))")
                     .font(.caption)
                     .foregroundColor(.white.opacity(0.6))
             }
