@@ -44,8 +44,12 @@ class RealAIService: ObservableObject, AIServiceProtocol {
     
     private lazy var urlSession: URLSession = {
         let config = URLSessionConfiguration.default
-        config.timeoutIntervalForRequest = 15.0
-        config.timeoutIntervalForResource = 30.0
+        // Audio transcription uploads a multi-minute file and then waits while
+        // Whisper processes it server-side with no response bytes flowing — the
+        // old 15s/30s limits guaranteed a timeout on anything but the shortest
+        // clip. These ceilings cover a full chunk upload + transcription.
+        config.timeoutIntervalForRequest = 120.0
+        config.timeoutIntervalForResource = 300.0
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
         config.urlCache = nil
         return URLSession(configuration: config)

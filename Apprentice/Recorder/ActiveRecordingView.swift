@@ -5,23 +5,25 @@
 //  Layer 8: Views - Clean recording interface with all build errors fixed
 //  COMPLETE: All syntax issues resolved, proper structure maintained
 //
+//  Repointed onto the new SwiftData capture stack (RecordingViewModel /
+//  NoteCaptureService): audio is RETAINED (never deleted), transcription runs
+//  per-chunk through the proxy, and AI enrichment (Claude) runs automatically.
+//  The visual layout is unchanged from the original design.
+//
 
 import SwiftUI
+import SwiftData
 
 struct ActiveRecordingView: View {
-    
+
     // MARK: - State Properties
-    @StateObject private var audioRecorder = AudioRecorder()
-    @StateObject private var aiService = RealAIService()
-    @StateObject private var sessionManager = SessionManager.shared
-    
+    @StateObject private var vm = RecordingViewModel(context: NoteStore.mainContext)
+
     @State private var selectedContextType: ContextType = .personalMeeting
     @State private var showingContextSelector = false
-    @State private var isProcessing = false
-    @State private var transcription = ""
-    @State private var aiResponse = ""
-    @State private var errorMessage = ""
-    
+    @State private var finishedNote: Note?
+    @State private var isReanalyzing = false
+
     // MARK: - Context Types
     enum ContextType: String, CaseIterable, Identifiable {
         case personalMeeting = "Personal Meeting"
@@ -29,9 +31,9 @@ struct ActiveRecordingView: View {
         case oneOnOne = "1:1 Conversation"
         case conference = "Conference/Event"
         case externalNoteTaker = "Content Analysis"
-        
+
         var id: String { rawValue }
-        
+
         var icon: String {
             switch self {
             case .personalMeeting: return "person.circle"
@@ -41,7 +43,7 @@ struct ActiveRecordingView: View {
             case .externalNoteTaker: return "doc.text.magnifyingglass"
             }
         }
-        
+
         var color: Color {
             switch self {
             case .personalMeeting: return .blue
@@ -51,7 +53,7 @@ struct ActiveRecordingView: View {
             case .externalNoteTaker: return .cyan
             }
         }
-        
+
         var description: String {
             switch self {
             case .personalMeeting: return "You're leading a meeting with specific outcomes"
@@ -61,7 +63,7 @@ struct ActiveRecordingView: View {
             case .externalNoteTaker: return "Analyzing content for key insights and summaries"
             }
         }
-        
+
         var aiProcessingContext: String {
             switch self {
             case .personalMeeting: return "User is leading a meeting. Expect leadership decisions, strategic thinking, and assigned action items."
@@ -71,7 +73,7 @@ struct ActiveRecordingView: View {
             case .externalNoteTaker: return "User is consuming content. Extract key insights, summarize information, and identify learning opportunities. Auto-generate descriptive title."
             }
         }
-        
+
         var meetingType: ExecutiveSession.MeetingType {
             switch self {
             case .personalMeeting: return .strategySession
@@ -81,28 +83,66 @@ struct ActiveRecordingView: View {
             case .externalNoteTaker: return .boardMeeting
             }
         }
+
+        /// New-stack NoteType equivalent (drives the SwiftData Note's type).
+        var noteType: NoteType {
+            switch self {
+            case .personalMeeting: return .strategySession
+            case .teamMeeting: return .teamMeeting
+            case .oneOnOne: return .oneOnOne
+            case .conference: return .clientCall
+            case .externalNoteTaker: return .boardMeeting
+            }
+        }
     }
-    
+
+    // MARK: - Derived state (from the new capture VM / Note)
+
+    /// The note currently being recorded, or the one just finished (so results
+    /// stay on screen after stop, since the VM clears currentNote on stop).
+    private var displayNote: Note? { vm.currentNote ?? finishedNote }
+
+    private var transcriptText: String {
+        if let n = displayNote, !n.fullTranscript.isEmpty { return n.fullTranscript }
+        return ""
+    }
+
+    private var summaryText: String { displayNote?.aiSummary ?? "" }
+
+    /// Spinner state: transcribing chunks, enriching, or a manual re-analyze.
+    private var isProcessing: Bool {
+        if isReanalyzing { return true }
+        guard let n = displayNote else { return false }
+        if n.isTranscribing { return true }
+        return !n.fullTranscript.isEmpty && n.aiSummary.isEmpty
+    }
+
+    private var hasChunks: Bool { !(displayNote?.orderedChunks.isEmpty ?? true) }
+
+    private var showResults: Bool {
+        !vm.isActive && displayNote != nil && (!transcriptText.isEmpty || !summaryText.isEmpty || isProcessing)
+    }
+
     var body: some View {
         ZStack {
             backgroundGradient
-            
+
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(spacing: 32) {
                     headerSection
                     contextSelectorSection
                     recordingControlSection
-                    
-                    if !audioRecorder.recordingChunks.isEmpty {
+
+                    if hasChunks {
                         chunkStatusSection
                     }
-                    
-                    if !transcription.isEmpty {
+
+                    if showResults {
                         resultsSummarySection
                     }
-                    
-                    if !errorMessage.isEmpty {
-                        errorSection
+
+                    if let err = vm.errorMessage, !err.isEmpty {
+                        errorSection(err)
                     }
                 }
                 .padding(.horizontal, 24)
@@ -112,15 +152,13 @@ struct ActiveRecordingView: View {
         .sheet(isPresented: $showingContextSelector) {
             contextSelectorSheet
         }
-        .onAppear {
-            Task {
-                try? await audioRecorder.requestPermission()
-            }
+        .task {
+            await vm.requestPermissions()
         }
     }
-    
+
     // MARK: - View Components
-    
+
     private var backgroundGradient: some View {
         RadialGradient(
             colors: [
@@ -133,28 +171,28 @@ struct ActiveRecordingView: View {
         )
         .ignoresSafeArea()
     }
-    
+
     private var headerSection: some View {
         VStack(spacing: 16) {
             Text("Executive Recording")
                 .font(.largeTitle)
                 .fontWeight(.bold)
                 .foregroundColor(.white)
-            
+
             Text("Contextual AI Analysis")
                 .font(.title3)
                 .fontWeight(.medium)
                 .foregroundColor(.white.opacity(0.8))
         }
     }
-    
+
     private var contextSelectorSection: some View {
         VStack(spacing: 16) {
             Text("Recording Context")
                 .font(.headline)
                 .foregroundColor(.white)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            
+
             Button(action: {
                 showingContextSelector = true
             }) {
@@ -163,25 +201,25 @@ struct ActiveRecordingView: View {
                         Circle()
                             .fill(selectedContextType.color.opacity(0.3))
                             .frame(width: 50, height: 50)
-                        
+
                         Image(systemName: selectedContextType.icon)
                             .font(.system(size: 22, weight: .medium))
                             .foregroundColor(selectedContextType.color)
                     }
-                    
+
                     VStack(alignment: .leading, spacing: 4) {
                         Text(selectedContextType.rawValue)
                             .font(.headline)
                             .fontWeight(.semibold)
                             .foregroundColor(.white)
-                        
+
                         Text(selectedContextType.description)
                             .font(.subheadline)
                             .foregroundColor(.white.opacity(0.7))
                     }
-                    
+
                     Spacer()
-                    
+
                     Image(systemName: "chevron.down")
                         .font(.system(size: 16, weight: .medium))
                         .foregroundColor(.white.opacity(0.6))
@@ -197,65 +235,65 @@ struct ActiveRecordingView: View {
             .buttonStyle(PlainButtonStyle())
         }
     }
-    
+
     private var recordingControlSection: some View {
         VStack(spacing: 24) {
             // Main Recording Button
             Button(action: {
-                audioRecorder.toggleRecording()
+                toggleRecording()
             }) {
                 ZStack {
                     Circle()
-                        .fill(audioRecorder.isRecording ?
+                        .fill(vm.isActive ?
                               LinearGradient(colors: [.red, .red.opacity(0.8)], startPoint: .top, endPoint: .bottom) :
                               LinearGradient(colors: [selectedContextType.color, selectedContextType.color.opacity(0.8)], startPoint: .top, endPoint: .bottom))
                         .frame(width: 120, height: 120)
-                        .shadow(color: (audioRecorder.isRecording ? .red : selectedContextType.color).opacity(0.4), radius: 20)
-                    
-                    Image(systemName: audioRecorder.isRecording ? "stop.fill" : "mic.fill")
+                        .shadow(color: (vm.isActive ? .red : selectedContextType.color).opacity(0.4), radius: 20)
+
+                    Image(systemName: vm.isActive ? "stop.fill" : "mic.fill")
                         .font(.system(size: 50, weight: .medium))
                         .foregroundColor(.white)
                 }
-                .animation(.easeInOut(duration: 0.3), value: audioRecorder.isRecording)
+                .animation(.easeInOut(duration: 0.3), value: vm.isActive)
             }
-            .disabled(!audioRecorder.hasPermission)
-            
+            .disabled(vm.micDenied)
+
             // Recording Status
             VStack(spacing: 8) {
-                Text(audioRecorder.isRecording ? "Recording..." : "Ready to Record")
+                Text(vm.isActive ? "Recording..." : "Ready to Record")
                     .font(.title2)
                     .fontWeight(.semibold)
                     .foregroundColor(.white)
-                
-                if audioRecorder.isRecording {
+
+                if vm.isActive {
                     VStack(spacing: 6) {
-                        Text("Session: \(audioRecorder.formattedSessionDuration)")
+                        Text("Session: \(vm.formattedElapsed)")
                             .font(.title3)
                             .fontWeight(.bold)
                             .foregroundColor(selectedContextType.color)
-                        
+
                         HStack(spacing: 4) {
                             Circle()
                                 .fill(.red)
                                 .frame(width: 8, height: 8)
-                                .animation(.easeInOut(duration: 1.0).repeatForever(autoreverses: true), value: audioRecorder.isRecording)
-                            
-                            Text("Chunk \(audioRecorder.currentChunk): \(audioRecorder.formattedChunkDuration)")
+                                .animation(.easeInOut(duration: 1.0).repeatForever(autoreverses: true), value: vm.isActive)
+
+                            Text("Chunk \(vm.capture.engine.currentChunkIndex + 1)")
                                 .font(.subheadline)
                                 .foregroundColor(.white.opacity(0.8))
                         }
                     }
-                } else if !audioRecorder.hasPermission {
+                } else if vm.micDenied {
                     Text("Microphone permission required")
                         .font(.subheadline)
                         .foregroundColor(.red)
                 }
             }
-            
+
             // Process Button
-            if !audioRecorder.recordingChunks.isEmpty && !audioRecorder.isRecording {
-                Button("Process Recording (\(audioRecorder.recordingChunks.count) chunks)") {
-                    processAllRecordingChunks()
+            if let note = displayNote, !note.orderedChunks.isEmpty, !vm.isActive {
+                Button("Process Recording (\(note.orderedChunks.count) chunks)") {
+                    reanalyze(note)
                 }
                 .font(.headline)
                 .fontWeight(.semibold)
@@ -275,47 +313,60 @@ struct ActiveRecordingView: View {
             }
         }
     }
-    
+
     private var chunkStatusSection: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Recording Chunks")
                 .font(.headline)
                 .fontWeight(.semibold)
                 .foregroundColor(.white)
-            
+
             LazyVStack(spacing: 12) {
-                ForEach(audioRecorder.recordingChunks) { chunk in
+                ForEach(displayNote?.orderedChunks ?? [], id: \.id) { chunk in
                     HStack(spacing: 16) {
                         ZStack {
                             Circle()
-                                .fill(chunk.isValidSize ? chunk.transcriptionState.color.opacity(0.3) : .red.opacity(0.3))
+                                .fill(chunk.isValidSize ? chunk.status.color.opacity(0.3) : .red.opacity(0.3))
                                 .frame(width: 40, height: 40)
-                            
-                            Image(systemName: chunk.transcriptionState.icon)
+
+                            Image(systemName: chunk.status.iconName)
                                 .font(.system(size: 18, weight: .medium))
-                                .foregroundColor(chunk.isValidSize ? chunk.transcriptionState.color : .red)
+                                .foregroundColor(chunk.isValidSize ? chunk.status.color : .red)
                         }
-                        
+
                         VStack(alignment: .leading, spacing: 4) {
                             HStack {
-                                Text("Chunk \(chunk.number)")
+                                Text("Chunk \(chunk.index + 1)")
                                     .font(.subheadline)
                                     .fontWeight(.semibold)
                                     .foregroundColor(.white)
-                                
+
                                 Spacer()
-                                
+
                                 Text(chunk.formattedDuration)
                                     .font(.caption)
                                     .foregroundColor(.white.opacity(0.6))
                             }
-                            
-                            Text(chunk.statusDescription)
+
+                            Text(chunk.status.displayName)
                                 .font(.caption)
                                 .foregroundColor(.white.opacity(0.7))
                         }
-                        
+
                         Spacer()
+
+                        // Re-transcribe safety net: audio is retained, so a
+                        // failed/timed-out chunk can always be retried.
+                        if chunk.canRetry {
+                            Button {
+                                vm.capture.retranscribe(chunk)
+                            } label: {
+                                Image(systemName: "arrow.clockwise.circle.fill")
+                                    .font(.system(size: 24))
+                                    .foregroundColor(selectedContextType.color)
+                            }
+                            .buttonStyle(PlainButtonStyle())
+                        }
                     }
                     .padding(16)
                     .background(.white.opacity(0.05))
@@ -328,7 +379,7 @@ struct ActiveRecordingView: View {
             }
         }
     }
-    
+
     private var resultsSummarySection: some View {
         VStack(spacing: 20) {
             Text("Processing Results")
@@ -336,13 +387,13 @@ struct ActiveRecordingView: View {
                 .fontWeight(.bold)
                 .foregroundColor(.white)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            
+
             if isProcessing {
                 VStack(spacing: 16) {
                     ProgressView()
                         .progressViewStyle(CircularProgressViewStyle(tint: selectedContextType.color))
                         .scaleEffect(1.5)
-                    
+
                     Text("Processing with AI...")
                         .font(.subheadline)
                         .foregroundColor(.white.opacity(0.7))
@@ -352,19 +403,19 @@ struct ActiveRecordingView: View {
                 .background(.white.opacity(0.05))
                 .clipShape(RoundedRectangle(cornerRadius: 16))
             } else {
-                if !transcription.isEmpty {
+                if !transcriptText.isEmpty {
                     resultCard(
                         title: "Transcription",
-                        content: transcription,
+                        content: transcriptText,
                         icon: "text.quote",
                         color: Color.blue
                     )
                 }
-                
-                if !aiResponse.isEmpty {
+
+                if !summaryText.isEmpty {
                     resultCard(
                         title: "AI Analysis",
-                        content: aiResponse,
+                        content: summaryText,
                         icon: "brain",
                         color: selectedContextType.color
                     )
@@ -372,8 +423,8 @@ struct ActiveRecordingView: View {
             }
         }
     }
-    
-    private var errorSection: some View {
+
+    private func errorSection(_ message: String) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Image(systemName: "exclamationmark.triangle.fill")
@@ -383,8 +434,8 @@ struct ActiveRecordingView: View {
                     .fontWeight(.semibold)
                     .foregroundColor(.red)
             }
-            
-            Text(errorMessage)
+
+            Text(message)
                 .font(.body)
                 .foregroundColor(.white.opacity(0.9))
         }
@@ -396,7 +447,7 @@ struct ActiveRecordingView: View {
                 .stroke(.red.opacity(0.3), lineWidth: 1)
         )
     }
-    
+
     private var contextSelectorSheet: some View {
         NavigationView {
             List(ContextType.allCases) { contextType in
@@ -414,24 +465,24 @@ struct ActiveRecordingView: View {
         }
         .presentationDetents([.medium])
     }
-    
+
     // MARK: - Helper Views
-    
+
     private func resultCard(title: String, content: String, icon: String, color: Color) -> some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
                 Image(systemName: icon)
                     .font(.system(size: 20, weight: .medium))
                     .foregroundColor(color)
-                
+
                 Text(title)
                     .font(.headline)
                     .fontWeight(.semibold)
                     .foregroundColor(.white)
-                
+
                 Spacer()
             }
-            
+
             ScrollView {
                 Text(content)
                     .font(.body)
@@ -448,7 +499,7 @@ struct ActiveRecordingView: View {
                 .stroke(color.opacity(0.3), lineWidth: 1)
         )
     }
-    
+
     private func contextOptionCard(_ contextType: ContextType) -> some View {
         Button(action: {
             selectedContextType = contextType
@@ -459,26 +510,26 @@ struct ActiveRecordingView: View {
                     Circle()
                         .fill(contextType.color.opacity(0.3))
                         .frame(width: 60, height: 60)
-                    
+
                     Image(systemName: contextType.icon)
                         .font(.system(size: 26, weight: .medium))
                         .foregroundColor(contextType.color)
                 }
-                
+
                 VStack(alignment: .leading, spacing: 6) {
                     Text(contextType.rawValue)
                         .font(.headline)
                         .fontWeight(.semibold)
                         .foregroundColor(.primary)
-                    
+
                     Text(contextType.description)
                         .font(.subheadline)
                         .foregroundColor(.secondary)
                         .multilineTextAlignment(.leading)
                 }
-                
+
                 Spacer()
-                
+
                 if contextType == selectedContextType {
                     Image(systemName: "checkmark.circle.fill")
                         .font(.system(size: 24))
@@ -495,99 +546,41 @@ struct ActiveRecordingView: View {
         }
         .buttonStyle(PlainButtonStyle())
     }
-    
-    // MARK: - Processing Methods
-    
-    private func processAllRecordingChunks() {
+
+    // MARK: - Recording control
+
+    private func toggleRecording() {
+        if vm.isActive {
+            // Finalize — audio is retained, transcription + enrichment run
+            // automatically. Note: we do NOT delete audio or create a legacy
+            // ExecutiveSession here (the SwiftData Note already exists and the
+            // SessionManager projection surfaces it).
+            finishedNote = vm.stop()
+        } else {
+            finishedNote = nil
+            vm.noteType = selectedContextType.noteType
+            vm.pendingTitle = defaultTitle()
+            vm.start()
+        }
+    }
+
+    /// Re-run AI enrichment on the finished note (audio is retained, so this is
+    /// always possible). Enrichment also runs automatically once transcription
+    /// completes; this button forces a fresh pass.
+    private func reanalyze(_ note: Note) {
+        guard !isReanalyzing else { return }
+        isReanalyzing = true
         Task {
-            await processAllChunksWithAI()
+            _ = await NoteEnrichmentService.enrich(note, context: NoteStore.mainContext, force: true)
+            isReanalyzing = false
         }
     }
-    
-    @MainActor
-    private func processAllChunksWithAI() async {
-        guard !audioRecorder.recordingChunks.isEmpty else {
-            errorMessage = "No recording chunks to process"
-            return
-        }
-        
-        isProcessing = true
-        errorMessage = ""
-        transcription = ""
-        aiResponse = ""
-        
-        do {
-            let combinedTranscription = await audioRecorder.getCombinedTranscription()
-            transcription = combinedTranscription
-            
-            if combinedTranscription.isEmpty {
-                throw RecordingProcessingError.emptyTranscription
-            }
-            
-            let contextualPrompt = buildContextualPrompt(transcription: combinedTranscription)
-            let response = try await aiService.generateCoachingResponse(prompt: contextualPrompt)
-            aiResponse = response
-            
-            createContextualSession(
-                transcription: combinedTranscription,
-                aiResponse: response,
-                totalDuration: audioRecorder.recordingChunks.reduce(0) { $0 + $1.duration }
-            )
-            
-        } catch {
-            errorMessage = "Processing failed: \(error.localizedDescription)"
-        }
-        
-        isProcessing = false
-    }
-    
-    private func buildContextualPrompt(transcription: String) -> String {
-        let contextInstructions = selectedContextType.aiProcessingContext
-        
-        return """
-        \(contextInstructions)
-        
-        Transcription Content:
-        \(transcription)
-        
-        Based on this context, provide analysis and insights.
-        """
-    }
-    
-    private func createContextualSession(transcription: String, aiResponse: String, totalDuration: TimeInterval) {
-        let title = selectedContextType == .externalNoteTaker ?
-            generateSmartTitle(from: transcription) :
-            "\(selectedContextType.rawValue) - \(Date().formatted(date: .abbreviated, time: .shortened))"
-        
-        let session = ExecutiveSession(
-            title: title,
-            date: Date(),
-            duration: totalDuration,
-            type: selectedContextType.meetingType,
-            priority: .medium,
-            notes: [],
-            attendees: selectedContextType == .externalNoteTaker ? ["AI Analysis"] : ["Participant"],
-            transcript: transcription,
-            aiSummary: aiResponse
-        )
-        
-        sessionManager.addSession(session)
-        audioRecorder.deleteAllChunks()
-    }
-    
-    private func generateSmartTitle(from transcription: String) -> String {
-        let words = transcription.components(separatedBy: .whitespacesAndNewlines)
-            .filter { $0.count > 3 }
-            .prefix(100)
-            .joined(separator: " ")
-        
-        let sentences = words.components(separatedBy: ".")
-        if let firstSentence = sentences.first, firstSentence.count > 10 {
-            let titleWords = firstSentence.components(separatedBy: .whitespacesAndNewlines)
-            return Array(titleWords.prefix(6)).joined(separator: " ").capitalized
-        }
-        
-        return "Content Analysis - \(Date().formatted(date: .abbreviated, time: .shortened))"
+
+    private func defaultTitle() -> String {
+        // Content Analysis gets an AI-generated title during enrichment; others
+        // get a context + timestamp placeholder until enrichment retitles them.
+        if selectedContextType == .externalNoteTaker { return "" }
+        return "\(selectedContextType.rawValue) - \(Date().formatted(date: .abbreviated, time: .shortened))"
     }
 }
 

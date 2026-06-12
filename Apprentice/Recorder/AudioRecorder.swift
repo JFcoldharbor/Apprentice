@@ -41,7 +41,10 @@ class AudioRecorder: NSObject, ObservableObject {
     @Published var recordingDuration: TimeInterval = 0
     
     // Configuration
-    private let chunkDurationSeconds: TimeInterval = 600 // 10 minutes
+    // Keep chunks short so each transcription upload stays small and finishes
+    // well inside the network timeout. Long (10-min) chunks produced files too
+    // large to transcribe reliably; ~3 min processes cleanly.
+    private let chunkDurationSeconds: TimeInterval = 180 // 3 minutes
     
     // MARK: - Initialization
     override init() {
@@ -406,11 +409,13 @@ class AudioRecorder: NSObject, ObservableObject {
             throw RecordingError.fileCreationFailed
         }
         
+        // 16 kHz mono is all Whisper uses (it downsamples internally), so a higher
+        // rate/quality only inflates the upload. This keeps chunk files small.
         let settings: [String: Any] = [
             AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
-            AVSampleRateKey: 44100.0,
+            AVSampleRateKey: 16000.0,
             AVNumberOfChannelsKey: 1,
-            AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
+            AVEncoderAudioQualityKey: AVAudioQuality.medium.rawValue
         ]
         
         audioRecorder = try AVAudioRecorder(url: url, settings: settings)

@@ -39,7 +39,7 @@ struct ContentView: View {
                     checkOnboardingStatus()
                 }
             } else {
-                mainContent
+                AriaRootView()
             }
         }
         .onAppear {

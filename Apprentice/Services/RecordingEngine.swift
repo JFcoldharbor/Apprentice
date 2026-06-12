@@ -38,8 +38,10 @@ final class RecordingEngine: NSObject, ObservableObject {
     @Published private(set) var currentChunkIndex = 0
 
     /// Seconds of audio per chunk before rollover (kept modest so transcription
-    /// starts flowing well before a long recording ends).
-    var chunkDuration: TimeInterval = 300
+    /// starts flowing well before a long recording ends). 3 min keeps each
+    /// proxy/Whisper upload comfortably inside the transcription timeout —
+    /// longer chunks were timing out on the legacy path.
+    var chunkDuration: TimeInterval = 180
 
     /// Emitted on the main thread when a chunk file is finalized.
     var onChunkFinalized: ((FinalizedChunk) -> Void)?

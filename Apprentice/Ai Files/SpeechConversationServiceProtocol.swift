@@ -649,22 +649,49 @@ class SpeechConversationService: NSObject, ObservableObject, SpeechConversationS
             return "Yes, what can I help you with?"
         }
         
-        // OPTIMIZED: Use ConversationEngine only for memory-specific queries
-        let needsMemorySearch = transcript.lowercased().contains("meeting") ||
-                               transcript.lowercased().contains("recall") ||
-                               transcript.lowercased().contains("remember") ||
-                               transcript.lowercased().contains("graham") ||
-                               transcript.lowercased().contains("conversation") ||
-                               transcript.lowercased().contains("session") ||
-                               transcript.lowercased().contains("discussed") ||
-                               transcript.lowercased().contains("talked about")
-        
-        if needsMemorySearch {
-            print("🧠 [AI] Memory query detected, using full ConversationEngine")
-            return await processWithFullMemory(transcript)
-        } else {
-            print("⚡ [AI] General query, using fast processing")
-            return await processWithFastResponse(transcript)
+        // Brain repoint: every turn now goes through Claude (via the Firebase
+        // proxy) grounded in the founder's REAL note memory (CoachContext) — not
+        // the legacy empty-context OpenAI path. The orb's STT/TTS and visuals are
+        // unchanged; only the response generator is upgraded.
+        return await processWithCoachBrain(transcript)
+    }
+
+    // MARK: - Coach Brain (Claude + note memory)
+
+    private func processWithCoachBrain(_ transcript: String) async -> String {
+        do {
+            var system = CoachPersona.system
+
+            // Founder profile (mirrors the legacy fast-prompt fields).
+            if let profile = FounderProfileManager.shared.founderProfile {
+                system += """
+
+
+                FOUNDER:
+                - Name: \(profile.founderName)
+                - Business: \(profile.businessName ?? "Startup")
+                - Industry: \(profile.industry)
+                """
+            }
+
+            // Relevance-ranked context from the founder's actual notes + open actions.
+            let memory = CoachContext.build(query: transcript, context: NoteStore.mainContext)
+            system += "\n\n" + memory
+
+            let reply = try await AIClient.shared.chatText(
+                system: system,
+                messages: [AIChatMessage(role: "user", content: transcript)],
+                tier: .standard
+            )
+
+            isProcessingAI = false
+            print("✅ [AI] Coach-brain response generated: '\(reply.prefix(50))...'")
+            return reply.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        } catch {
+            print("❌ [AI] Coach-brain failed: \(error)")
+            isProcessingAI = false
+            return generateQuickFallbackResponse(for: transcript)
         }
     }
     
