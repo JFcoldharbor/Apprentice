@@ -17,6 +17,7 @@ struct AriaHomeScreen: View {
 
     @State private var connectionCount = 0
     @State private var showingAsk = false
+    @State private var showingVoice = false
     @State private var showingSettings = false
     @State private var orbFloat = false
 
@@ -43,6 +44,7 @@ struct AriaHomeScreen: View {
             .padding(.horizontal, 22)
             .padding(.bottom, 130)
         }
+        .sheet(isPresented: $showingVoice) { AriaVoiceSheet() }
         .sheet(isPresented: $showingAsk) { AriaAskSheet() }
         .sheet(isPresented: $showingSettings) { AriaSettingsSheet() }
         .onAppear { orbFloat = true; recomputeConnections() }
@@ -95,7 +97,7 @@ struct AriaHomeScreen: View {
             .frame(width: 230, height: 230)
             .offset(y: orbFloat ? -7 : 0)
             .animation(.easeInOut(duration: 3.5).repeatForever(autoreverses: true), value: orbFloat)
-            .onTapGesture { showingAsk = true }
+            .onTapGesture { showingVoice = true }
 
             HStack(spacing: 9) {
                 Circle().fill(Aria.jade).frame(width: 7, height: 7)
