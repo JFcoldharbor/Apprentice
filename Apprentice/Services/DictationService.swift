@@ -49,6 +49,9 @@ final class DictationService: ObservableObject {
             try session.setActive(true, options: .notifyOthersOnDeactivation)
 
             let input = engine.inputNode
+            // Defensive: a lingering tap from a prior session would make this
+            // installTap crash ("CreateRecordingTap: nullptr == Tap()").
+            input.removeTap(onBus: 0)
             let format = input.outputFormat(forBus: 0)
             input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
                 self?.request?.append(buffer)
@@ -76,8 +79,10 @@ final class DictationService: ObservableObject {
     func stop() {
         if engine.isRunning {
             engine.stop()
-            engine.inputNode.removeTap(onBus: 0)
         }
+        // Always remove the tap (even if the engine never started) so a later
+        // start() can't crash on a leftover tap.
+        engine.inputNode.removeTap(onBus: 0)
         request?.endAudio()
         task?.cancel()
         task = nil

@@ -95,6 +95,7 @@ final class RecordingEngine: NSObject, ObservableObject {
         converter = AVAudioConverter(from: inFormat, to: procFormat)
         chunkThresholdFrames = AVAudioFrameCount(chunkDuration * procFormat.sampleRate)
 
+        input.removeTap(onBus: 0) // defensive: avoid CreateRecordingTap crash on a leftover tap
         input.installTap(onBus: 0, bufferSize: 4096, format: inFormat) { [weak self] buffer, _ in
             self?.process(buffer)
         }
