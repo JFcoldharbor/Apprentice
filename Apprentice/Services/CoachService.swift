@@ -104,13 +104,19 @@ enum CoachContext {
 
         let relevant = Array(rank(docs, query: query, text: {
             [$0.title, $0.originalName, $0.extractedText ?? ""] + $0.businessInsights
-        }).prefix(3))
+        }).prefix(4))
         let relevantIDs = Set(relevant.map { $0.id })
         for doc in relevant {
-            if !doc.businessInsights.isEmpty {
+            // Prefer the document's actual text (so Aria can read specifics like an
+            // EIN number), then any extracted insights, then just the title.
+            if let text = doc.extractedText, !text.isEmpty {
+                var body = String(text.prefix(1500))
+                if !doc.businessInsights.isEmpty {
+                    body += "\n  Insights: " + doc.businessInsights.prefix(3).joined(separator: "; ")
+                }
+                lines.append("- \(doc.title): \(body)")
+            } else if !doc.businessInsights.isEmpty {
                 lines.append("- \(doc.title): \(doc.businessInsights.prefix(3).joined(separator: "; "))")
-            } else if let text = doc.extractedText, !text.isEmpty {
-                lines.append("- \(doc.title): \(String(text.prefix(500)))")
             } else {
                 lines.append("- \(doc.title)")
             }

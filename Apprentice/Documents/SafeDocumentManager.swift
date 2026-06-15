@@ -10,6 +10,10 @@ import Foundation
 import SwiftUI
 import PDFKit
 import UniformTypeIdentifiers
+import Vision
+#if canImport(UIKit)
+import UIKit
+#endif
 
 @MainActor
 class SafeDocumentManager: ObservableObject {
@@ -203,7 +207,7 @@ class SafeDocumentManager: ObservableObject {
         let extractedText: String
         switch fileExtension {
         case "pdf":
-            extractedText = try extractTextFromPDF(url: url)
+            extractedText = try await extractTextFromPDF(url: url)
         case "txt", "md":
             extractedText = try String(contentsOf: url, encoding: .utf8)
         case "rtf":
@@ -216,11 +220,11 @@ class SafeDocumentManager: ObservableObject {
         return extractedText
     }
     
-    private func extractTextFromPDF(url: URL) throws -> String {
+    private func extractTextFromPDF(url: URL) async throws -> String {
         guard let pdfDocument = PDFDocument(url: url) else {
             throw DocumentProcessingError.processingFailed("Unable to load PDF document")
         }
-        
+
         var text = ""
         for pageIndex in 0..<pdfDocument.pageCount {
             if let page = pdfDocument.page(at: pageIndex) {
@@ -228,8 +232,52 @@ class SafeDocumentManager: ObservableObject {
                 text += "\n"
             }
         }
-        
-        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let layerText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Scanned / image-only PDFs (e.g. an IRS EIN confirmation letter) have no
+        // text layer, so `page.string` is empty. Fall back to on-device OCR so the
+        // content is still readable by Aria.
+        if layerText.count < 24 {
+            let ocr = await Self.ocrPDF(url: url)
+            if !ocr.isEmpty {
+                print("📖 [DOC] OCR recovered \(ocr.count) chars from a scanned PDF")
+                return ocr
+            }
+        }
+        return layerText
+    }
+
+    /// Vision OCR fallback for image-only PDFs — renders each page and recognizes
+    /// text. Runs off the main actor (CPU-heavy). Returns "" if nothing is found.
+    nonisolated private static func ocrPDF(url: URL) async -> String {
+        await Task.detached(priority: .userInitiated) { () -> String in
+            guard let pdf = PDFDocument(url: url) else { return "" }
+            var out = ""
+            for i in 0..<pdf.pageCount {
+                guard let page = pdf.page(at: i) else { continue }
+                #if canImport(UIKit)
+                let bounds = page.bounds(for: .mediaBox)
+                let scale: CGFloat = 2.0
+                let pixelSize = CGSize(width: bounds.width * scale, height: bounds.height * scale)
+                guard let cg = page.thumbnail(of: pixelSize, for: .mediaBox).cgImage else { continue }
+                let request = VNRecognizeTextRequest()
+                request.recognitionLevel = .accurate
+                request.usesLanguageCorrection = true
+                let handler = VNImageRequestHandler(cgImage: cg, options: [:])
+                do {
+                    try handler.perform([request])
+                    for obs in request.results ?? [] {
+                        if let candidate = obs.topCandidates(1).first {
+                            out += candidate.string + "\n"
+                        }
+                    }
+                } catch {
+                    // page OCR failed — skip this page
+                }
+                #endif
+            }
+            return out.trimmingCharacters(in: .whitespacesAndNewlines)
+        }.value
     }
     
     private func extractTextFromRTF(url: URL) throws -> String {
