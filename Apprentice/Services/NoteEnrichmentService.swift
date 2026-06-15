@@ -147,5 +147,8 @@ enum NoteEnrichmentService {
 
         note.updatedAt = Date()
         try? context.save()
+
+        // Mirror the summary into the shared Aria memory (web War Room can reference it).
+        AriaMirror.shared.mirrorNote(noteId: note.id.uuidString, title: note.title, summary: result.summary)
     }
 }

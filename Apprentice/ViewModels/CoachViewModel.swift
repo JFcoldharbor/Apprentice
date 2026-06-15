@@ -35,6 +35,7 @@ final class CoachViewModel: ObservableObject {
         let userMessage = CoachMessage(role: "user", text: text)
         context.insert(userMessage)
         try? context.save()
+        AriaMirror.shared.mirrorTurn(role: "user", content: text) // → shared web/phone thread
 
         isSending = true
         Task { await respond(to: text) }
@@ -55,6 +56,7 @@ final class CoachViewModel: ObservableObject {
             )
             context.insert(CoachMessage(role: "assistant", text: reply))
             try? context.save()
+            AriaMirror.shared.mirrorTurn(role: "assistant", content: reply) // → shared thread
             if autoSpeak {
                 Task { await VoiceService.shared.speak(reply) }
             }
