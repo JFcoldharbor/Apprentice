@@ -45,7 +45,16 @@ final class CoachViewModel: ObservableObject {
         defer { isSending = false }
 
         let system = CoachPersona.system + "\n\n" + CoachContext.build(query: text, context: context)
-        let history = recentHistory()
+
+        // Prefer the SHARED thread (web War Room + phone) so Aria continues the
+        // same cross-device conversation; fall back to local history if offline.
+        var history = await AriaMirror.shared.fetchThread()
+        if history.isEmpty { history = recentHistory() }
+        // Ensure this turn is the final user message (it may not have mirrored yet).
+        if history.last?.role != "user" || history.last?.content != text {
+            history.append(AIChatMessage(role: "user", content: text))
+        }
+        while let first = history.first, first.role != "user" { history.removeFirst() }
 
         do {
             let reply = try await AIClient.shared.chatText(
