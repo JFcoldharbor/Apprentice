@@ -44,12 +44,13 @@ final class NoteCaptureService: ObservableObject {
     // MARK: - Control
 
     @discardableResult
-    func startRecording(type: NoteType = .general, title: String = "") throws -> Note {
+    func startRecording(type: NoteType = .general, title: String = "", attendees: [String] = []) throws -> Note {
         let resolvedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         let note = Note(
             title: resolvedTitle.isEmpty ? Self.defaultTitle() : resolvedTitle,
             type: type,
-            status: .inProgress
+            status: .inProgress,
+            attendees: attendees
         )
         context.insert(note)
         try? context.save()

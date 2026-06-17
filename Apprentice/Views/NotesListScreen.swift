@@ -74,6 +74,7 @@ struct NotesListScreen: View {
     private func delete(at offsets: IndexSet) {
         for index in offsets {
             let note = filteredNotes[index]
+            AriaMirror.shared.deleteNote(noteId: note.id.uuidString) // also forget it in shared memory
             AudioFileStore.shared.deleteFiles(for: note)
             context.delete(note)
         }

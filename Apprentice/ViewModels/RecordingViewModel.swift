@@ -25,6 +25,7 @@ final class RecordingViewModel: ObservableObject {
     @Published private(set) var phase: Phase = .idle
     @Published var pendingTitle: String = ""
     @Published var noteType: NoteType = .general
+    @Published var pendingAttendees: [String] = []
     @Published var errorMessage: String?
     @Published private(set) var micDenied = false
 
@@ -80,7 +81,7 @@ final class RecordingViewModel: ObservableObject {
     func start() {
         errorMessage = nil
         do {
-            try capture.startRecording(type: noteType, title: pendingTitle)
+            try capture.startRecording(type: noteType, title: pendingTitle, attendees: pendingAttendees)
             phase = .recording
         } catch {
             errorMessage = error.localizedDescription
@@ -106,6 +107,7 @@ final class RecordingViewModel: ObservableObject {
         phase = .idle
         pendingTitle = ""
         noteType = .general
+        pendingAttendees = []
         return note
     }
 }

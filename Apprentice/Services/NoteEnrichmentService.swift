@@ -119,8 +119,11 @@ enum NoteEnrichmentService {
 
         note.aiSummary = result.summary
         note.insights = result.insights
-        // Only adopt the AI title if the note still has the auto-generated name.
-        if note.title.hasPrefix("Note · "), !result.title.isEmpty {
+        // Adopt the AI's title when the note still has an auto-generated name
+        // ("Note · …" or a record-context title like "1:1 Conversation · …") so
+        // sessions are recognizable here and in web Aria. A hand-typed title
+        // (no " · " date stamp) is preserved.
+        if note.title.contains(" · "), !result.title.isEmpty {
             note.title = result.title
         }
 
@@ -148,7 +151,7 @@ enum NoteEnrichmentService {
         note.updatedAt = Date()
         try? context.save()
 
-        // Mirror the summary into the shared Aria memory (web War Room can reference it).
-        AriaMirror.shared.mirrorNote(noteId: note.id.uuidString, title: note.title, summary: result.summary)
+        // Mirror the FULL debrief into the shared Aria memory (web War Room can debrief it).
+        AriaMirror.shared.mirrorNote(from: note)
     }
 }

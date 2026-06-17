@@ -6,6 +6,13 @@
 //  AVAudioEngine tap feeding SFSpeechRecognizer; publishes a live transcript the
 //  UI binds into the message draft. Tap to start, tap to stop.
 //
+//  Turn-taking: SFSpeechRecognizer auto-finalizes after a brief (~1.5s) pause,
+//  which cut the founder off when he paused to gather his thoughts. So we DON'T
+//  let the recognizer's finalize end the turn — on each finalize we fold the text
+//  into an accumulator and restart recognition to keep listening, and a 3-second
+//  SILENCE TIMER (reset on every bit of speech) decides when the turn is actually
+//  over. Tap still interrupts immediately.
+//
 
 import Foundation
 import Speech
@@ -19,10 +26,16 @@ final class DictationService: ObservableObject {
     @Published private(set) var isListening = false
     @Published private(set) var transcript = ""
 
+    /// How long the founder can pause (gather his thoughts) before the turn ends.
+    var silenceInterval: TimeInterval = 3.0
+
     private let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
     private let engine = AVAudioEngine()
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var task: SFSpeechRecognitionTask?
+    private var silenceTimer: Timer?
+    private var accumulated = ""   // finalized text from earlier segments this turn
+    private var ending = false     // true once the silence timer fires → real stop
 
     private init() {}
 
@@ -36,12 +49,8 @@ final class DictationService: ObservableObject {
               let recognizer, recognizer.isAvailable else { return }
 
         transcript = ""
-        let request = SFSpeechAudioBufferRecognitionRequest()
-        request.shouldReportPartialResults = true
-        if recognizer.supportsOnDeviceRecognition {
-            request.requiresOnDeviceRecognition = true
-        }
-        self.request = request
+        accumulated = ""
+        ending = false
 
         do {
             let session = AVAudioSession.sharedInstance()
@@ -59,24 +68,68 @@ final class DictationService: ObservableObject {
             engine.prepare()
             try engine.start()
             isListening = true
-
-            task = recognizer.recognitionTask(with: request) { [weak self] result, error in
-                guard let self else { return }
-                if let result {
-                    let text = result.bestTranscription.formattedString
-                    Task { @MainActor in self.transcript = text }
-                }
-                if error != nil || (result?.isFinal ?? false) {
-                    Task { @MainActor in self.stop() }
-                }
-            }
+            beginSegment()
         } catch {
             print("⚠️ DictationService: \(error.localizedDescription)")
             stop()
         }
     }
 
+    /// Start (or restart) a recognition task on the already-running audio engine.
+    /// Restarting on each finalize is what lets us listen ACROSS pauses.
+    private func beginSegment() {
+        guard isListening, !ending, let recognizer else { return }
+        let request = SFSpeechAudioBufferRecognitionRequest()
+        request.shouldReportPartialResults = true
+        if recognizer.supportsOnDeviceRecognition {
+            request.requiresOnDeviceRecognition = true
+        }
+        self.request = request
+
+        task = recognizer.recognitionTask(with: request) { [weak self] result, error in
+            guard let self else { return }
+            if let result {
+                let segment = result.bestTranscription.formattedString
+                let isFinal = result.isFinal
+                Task { @MainActor in
+                    let combined = (self.accumulated + " " + segment).trimmingCharacters(in: .whitespaces)
+                    self.transcript = combined
+                    if !segment.trimmingCharacters(in: .whitespaces).isEmpty { self.armSilence() }
+                    if isFinal {
+                        // The recognizer ended this segment (a pause). Keep its text
+                        // and start a fresh task so continued speech is still captured;
+                        // the 3s silence timer — not this finalize — ends the turn.
+                        self.accumulated = combined
+                        self.task = nil
+                        if self.isListening && !self.ending { self.beginSegment() }
+                    }
+                }
+            } else if error != nil {
+                // A genuine recognition error — end the turn rather than loop.
+                Task { @MainActor in if self.isListening { self.endTurn() } }
+            }
+        }
+    }
+
+    /// Reset the silence countdown; only true silence (no new speech for
+    /// `silenceInterval`) ends the turn.
+    private func armSilence() {
+        silenceTimer?.invalidate()
+        silenceTimer = Timer.scheduledTimer(withTimeInterval: silenceInterval, repeats: false) { [weak self] _ in
+            Task { @MainActor in self?.endTurn() }
+        }
+    }
+
+    private func endTurn() {
+        guard !ending else { return }
+        ending = true
+        stop() // → isListening = false → the voice sheet sends what was said
+    }
+
     func stop() {
+        silenceTimer?.invalidate()
+        silenceTimer = nil
+        ending = true
         if engine.isRunning {
             engine.stop()
         }

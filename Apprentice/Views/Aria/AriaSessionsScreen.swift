@@ -9,10 +9,14 @@
 import SwiftUI
 
 struct AriaSessionsScreen: View {
+    @Binding var selectedTab: Int
     @StateObject private var manager = SessionManager.shared
     @State private var search = ""
     @State private var filter: Filter = .all
     @State private var selected: ExecutiveSession?
+    @State private var pendingDelete: ExecutiveSession?
+    @State private var pendingCancel: ScheduledSession?
+    @State private var showingSchedule = false
     @State private var connectionCount = 0
 
     enum Filter: String, CaseIterable, Identifiable {
@@ -54,6 +58,11 @@ struct AriaSessionsScreen: View {
                 .padding(.top, 12).padding(.bottom, 22)
 
                 metrics.padding(.bottom, 22)
+
+                if search.isEmpty {
+                    upcomingSection.padding(.bottom, 22)
+                }
+
                 searchBar.padding(.bottom, 16)
                 filters.padding(.bottom, 18)
 
@@ -61,15 +70,100 @@ struct AriaSessionsScreen: View {
                     emptyState
                 } else {
                     ForEach(filtered, id: \.id) { s in
-                        SessionCard(session: s).onTapGesture { selected = s }
+                        SessionCard(session: s)
+                            .onTapGesture { selected = s }
+                            .contextMenu {
+                                Button(role: .destructive) { pendingDelete = s } label: {
+                                    Label("Delete session", systemImage: "trash")
+                                }
+                            }
                             .padding(.bottom, 12)
                     }
                 }
             }
             .padding(.horizontal, 22).padding(.bottom, 130)
         }
-        .sheet(item: $selected) { AriaSessionDetailSheet(session: $0) }
+        .sheet(item: $selected) { s in
+            AriaSessionDetailSheet(session: s, onDelete: { delete(s) })
+        }
+        .sheet(isPresented: $showingSchedule) {
+            AriaScheduleSheet().presentationDetents([.large])
+        }
+        .confirmationDialog(
+            "Delete this session?",
+            isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) { if let s = pendingDelete { delete(s) }; pendingDelete = nil }
+            Button("Cancel", role: .cancel) { pendingDelete = nil }
+        } message: {
+            Text(pendingDelete.map { "“\($0.title)” and its audio will be removed everywhere, including Aria’s memory." } ?? "")
+        }
+        .confirmationDialog(
+            "Cancel this scheduled session?",
+            isPresented: Binding(get: { pendingCancel != nil }, set: { if !$0 { pendingCancel = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("Cancel session", role: .destructive) { if let s = pendingCancel { manager.cancelScheduled(id: s.id) }; pendingCancel = nil }
+            Button("Keep", role: .cancel) { pendingCancel = nil }
+        } message: {
+            Text(pendingCancel.map { "Remove “\($0.title)” from your upcoming sessions." } ?? "")
+        }
         .onAppear(perform: recompute)
+        .task { await manager.syncScheduledFromCloud() }
+    }
+
+    // MARK: - Upcoming (pre-staged sessions)
+
+    private var upcomingSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                AriaSectionLabel(text: "Upcoming")
+                Spacer()
+                Button { showingSchedule = true } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "plus")
+                        Text("Schedule")
+                    }
+                    .font(.inter(12.5, .medium)).foregroundColor(Aria.gold)
+                    .padding(.horizontal, 12).padding(.vertical, 7)
+                    .overlay(Capsule().stroke(Aria.gold.opacity(0.4), lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+            }
+
+            if manager.scheduled.isEmpty {
+                Button { showingSchedule = true } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "calendar.badge.plus").font(.system(size: 17)).foregroundColor(Aria.goldBright)
+                        Text("Stage a client call or 1:1 ahead of time — set who's involved, ready to start.")
+                            .font(.inter(12.5)).foregroundColor(Aria.ivoryDim).multilineTextAlignment(.leading)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(14)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .stroke(style: StrokeStyle(lineWidth: 1, dash: [5, 5])).foregroundColor(Aria.line))
+                }
+                .buttonStyle(.plain)
+            } else {
+                ForEach(manager.scheduled) { s in
+                    UpcomingCard(session: s, onStart: { start(s) }, onCancel: { pendingCancel = s })
+                }
+            }
+        }
+    }
+
+    private func start(_ s: ScheduledSession) {
+        if let prefill = manager.startScheduled(id: s.id) {
+            RecordingHandoff.shared.prefill = prefill
+            selectedTab = 2   // jump to Record; the screen begins recording pre-filled
+        }
+    }
+
+    private func delete(_ session: ExecutiveSession) {
+        manager.deleteSession(session)   // also removes audio + forgets it in Aria's shared memory
+        recompute()
     }
 
     private var metrics: some View {
@@ -139,6 +233,84 @@ struct AriaSessionsScreen: View {
     private func recompute() {
         let snap = manager.sessions
         connectionCount = snap.count > 1 ? MemoryConnectionCalculator().analyzeConnections(sessions: snap).count : 0
+    }
+}
+
+// MARK: - Upcoming card
+
+private struct UpcomingCard: View {
+    let session: ScheduledSession
+    let onStart: () -> Void
+    let onCancel: () -> Void
+
+    private var isCall: Bool { session.type == .clientCall }
+    private var railColor: Color { isCall ? Aria.jade : Aria.gold }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 13) {
+            HStack(spacing: 13) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(railColor.opacity(0.14)).frame(width: 40, height: 40)
+                    Image(systemName: session.type.iconName).font(.system(size: 17)).foregroundColor(isCall ? Aria.jade : Aria.goldBright)
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(session.title).font(.fraunces(16, .medium)).foregroundColor(Aria.ivory).lineLimit(2)
+                    Text(whenText).font(.ariaMono(11.5)).foregroundColor(Aria.gold)
+                }
+                Spacer(minLength: 0)
+            }
+
+            if !session.attendees.isEmpty {
+                HStack(spacing: 7) {
+                    Image(systemName: "person.2.fill").font(.system(size: 11)).foregroundColor(Aria.ivoryFaint)
+                    Text(session.attendees.joined(separator: ", "))
+                        .font(.inter(12)).foregroundColor(Aria.ivoryDim).lineLimit(1)
+                }
+            }
+
+            HStack(spacing: 10) {
+                Button(action: onStart) {
+                    HStack(spacing: 7) {
+                        Image(systemName: "mic.fill").font(.system(size: 13))
+                        Text("Start").font(.inter(13.5, .semibold))
+                    }
+                    .foregroundColor(Color(red: 0.1, green: 0.07, blue: 0.02))
+                    .padding(.horizontal, 18).padding(.vertical, 10)
+                    .background(RadialGradient(colors: [Aria.goldBright, Aria.gold], center: UnitPoint(x: 0.3, y: 0.3), startRadius: 2, endRadius: 80))
+                    .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+
+                Button(action: onCancel) {
+                    Text("Cancel").font(.inter(13)).foregroundColor(Aria.ivoryDim)
+                        .padding(.horizontal, 14).padding(.vertical, 10)
+                        .overlay(Capsule().stroke(Aria.lineSoft, lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+                Spacer()
+            }
+        }
+        .padding(16)
+        .background(Aria.panel)
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(railColor.opacity(0.3), lineWidth: 1))
+        .overlay(alignment: .leading) {
+            Rectangle().fill(railColor.opacity(0.6)).frame(width: 3)
+                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        }
+        .contextMenu {
+            Button(role: .destructive, action: onCancel) { Label("Cancel session", systemImage: "trash") }
+        }
+    }
+
+    private var whenText: String {
+        let cal = Calendar.current
+        let time = session.scheduledFor.formatted(date: .omitted, time: .shortened)
+        if cal.isDateInToday(session.scheduledFor) { return "Today · \(time)" }
+        if cal.isDateInTomorrow(session.scheduledFor) { return "Tomorrow · \(time)" }
+        let day = session.scheduledFor.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day())
+        return "\(day) · \(time)"
     }
 }
 

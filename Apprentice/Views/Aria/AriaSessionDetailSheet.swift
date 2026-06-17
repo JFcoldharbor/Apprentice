@@ -11,12 +11,20 @@ import SwiftUI
 
 struct AriaSessionDetailSheet: View {
     let session: ExecutiveSession
+    var onDelete: (() -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
+    @StateObject private var manager = SessionManager.shared
+    @State private var confirmDelete = false
+    @State private var isAnalyzing = false
 
-    private var structured: StructuredNote? { session.notes.first }
-    private var actions: [ActionItem] { session.notes.flatMap { $0.actionItems } }
-    private var decisions: [Decision] { session.notes.flatMap { $0.decisions } }
-    private var insights: [String] { session.notes.flatMap { $0.insights } }
+    /// Live projection (reflects re-analysis), falling back to the passed snapshot.
+    private var s: ExecutiveSession { manager.sessions.first { $0.id == session.id } ?? session }
+
+    private var actions: [ActionItem] { s.notes.flatMap { $0.actionItems } }
+    private var decisions: [Decision] { s.notes.flatMap { $0.decisions } }
+    private var insights: [String] { s.notes.flatMap { $0.insights } }
+    private var hasSummary: Bool { !(s.aiSummary ?? "").isEmpty }
+    private var hasTranscript: Bool { !(s.transcript ?? "").isEmpty }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -24,7 +32,12 @@ struct AriaSessionDetailSheet: View {
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 22) {
                     titleBlock
-                    if let s = session.aiSummary, !s.isEmpty { section("Summary", icon: "brain") { paragraph(s) } }
+                    if hasTranscript && !hasSummary { analyzeCard }
+                    if let summary = s.aiSummary, !summary.isEmpty {
+                        section("Summary", icon: "brain") {
+                            VStack(alignment: .leading, spacing: 10) { paragraph(summary); reanalyzeButton }
+                        }
+                    }
                     if !insights.isEmpty {
                         section("Insights", icon: "lightbulb") {
                             VStack(alignment: .leading, spacing: 8) {
@@ -42,27 +55,98 @@ struct AriaSessionDetailSheet: View {
                             VStack(spacing: 8) { ForEach(decisions) { decisionRow($0) } }
                         }
                     }
-                    if let t = session.transcript, !t.isEmpty {
+                    if let t = s.transcript, !t.isEmpty {
                         section("Transcript", icon: "text.quote") { paragraph(t) }
                     }
+                    if onDelete != nil { deleteButton.padding(.top, 6) }
                 }
                 .padding(.horizontal, 22).padding(.top, 6).padding(.bottom, 40)
             }
         }
         .ariaSheetSurface()
+        .confirmationDialog("Delete this session?", isPresented: $confirmDelete, titleVisibility: .visible) {
+            Button("Delete", role: .destructive) { dismiss(); onDelete?() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("“\(session.title)” and its audio will be removed everywhere, including Aria’s memory.")
+        }
+    }
+
+    private var deleteButton: some View {
+        Button(role: .destructive) { confirmDelete = true } label: {
+            HStack(spacing: 9) {
+                Image(systemName: "trash").font(.system(size: 14))
+                Text("Delete session").font(.inter(14, .semibold))
+            }
+            .foregroundColor(Aria.rose)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 14)
+            .background(Aria.rose.opacity(0.10))
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(Aria.rose.opacity(0.35), lineWidth: 1))
+        }
     }
 
     private var titleBlock: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(session.title).font(.fraunces(26, .medium)).foregroundColor(Aria.ivory)
+            Text(s.title).font(.fraunces(26, .medium)).foregroundColor(Aria.ivory)
                 .fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 8) {
-                Text(session.date.formatted(date: .abbreviated, time: .shortened))
-                Text("· \(session.type.rawValue)").foregroundColor(Aria.ivoryFaint)
+                Text(s.date.formatted(date: .abbreviated, time: .shortened))
+                Text("· \(s.type.rawValue)").foregroundColor(Aria.ivoryFaint)
                 Text("· \(durationText)")
             }
             .font(.ariaMono(11.5)).foregroundColor(Aria.ivoryDim)
         }
+    }
+
+    // MARK: Analyze
+
+    /// Shown when a session was transcribed but never analyzed (enrichment failed
+    /// or was interrupted). Analyzing also mirrors it to web Aria.
+    private var analyzeCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 9) {
+                Image(systemName: "sparkles").font(.system(size: 15)).foregroundColor(Aria.goldBright)
+                Text("Not analyzed yet").font(.inter(14, .semibold)).foregroundColor(Aria.ivory)
+            }
+            Text("This session has a transcript but no summary. Analyze it to pull out the summary, actions & decisions — and share it with Aria on web.")
+                .font(.inter(12.5)).foregroundColor(Aria.ivoryDim).lineSpacing(2)
+            Button(action: runAnalyze) {
+                HStack(spacing: 8) {
+                    if isAnalyzing { ProgressView().tint(Color(red: 0.1, green: 0.07, blue: 0.02)) }
+                    else { Image(systemName: "wand.and.stars").font(.system(size: 14)) }
+                    Text(isAnalyzing ? "Analyzing…" : "Analyze with Aria").font(.inter(14, .semibold))
+                }
+                .foregroundColor(Color(red: 0.1, green: 0.07, blue: 0.02))
+                .frame(maxWidth: .infinity).padding(.vertical, 13)
+                .background(RadialGradient(colors: [Aria.goldBright, Aria.gold], center: UnitPoint(x: 0.3, y: 0.3), startRadius: 2, endRadius: 220))
+                .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+            }
+            .buttonStyle(.plain).disabled(isAnalyzing)
+        }
+        .padding(16)
+        .background(LinearGradient(colors: [Aria.gold.opacity(0.10), Aria.panel], startPoint: .topLeading, endPoint: .bottomTrailing))
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(Aria.gold.opacity(0.35), lineWidth: 1))
+    }
+
+    private var reanalyzeButton: some View {
+        Button(action: runAnalyze) {
+            HStack(spacing: 6) {
+                if isAnalyzing { ProgressView().scaleEffect(0.7).tint(Aria.gold) }
+                else { Image(systemName: "arrow.clockwise").font(.system(size: 11)) }
+                Text(isAnalyzing ? "Re-analyzing…" : "Re-analyze").font(.inter(11.5, .medium))
+            }
+            .foregroundColor(Aria.gold)
+        }
+        .buttonStyle(.plain).disabled(isAnalyzing)
+    }
+
+    private func runAnalyze() {
+        guard !isAnalyzing else { return }
+        isAnalyzing = true
+        Task { await manager.analyze(sessionId: session.id); isAnalyzing = false }
     }
 
     private func section<Content: View>(_ title: String, icon: String, @ViewBuilder content: () -> Content) -> some View {
@@ -124,7 +208,7 @@ struct AriaSessionDetailSheet: View {
     }
 
     private var durationText: String {
-        let total = Int(session.duration)
+        let total = Int(s.duration)
         if total < 60 { return "\(total)s" }
         return "\(total / 60)m \(String(format: "%02d", total % 60))s"
     }

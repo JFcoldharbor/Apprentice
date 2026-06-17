@@ -19,7 +19,7 @@ struct AriaRootView: View {
             Group {
                 switch selectedTab {
                 case 0: AriaHomeScreen(selectedTab: $selectedTab)
-                case 1: AriaSessionsScreen()
+                case 1: AriaSessionsScreen(selectedTab: $selectedTab)
                 case 2: AriaRecordScreen()
                 case 3: AriaIntelligenceScreen()
                 case 4: AriaMemoryScreen()
@@ -29,6 +29,13 @@ struct AriaRootView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 
             AriaTabBar(selected: $selectedTab)
+        }
+        // On launch: (1) analyze any session that transcribed but never got a
+        // summary, then (2) backfill — re-mirror every analyzed session to web
+        // Aria, healing any whose mirror was previously missed.
+        .task {
+            await SessionManager.shared.enrichPendingSessions()
+            SessionManager.shared.syncAnalyzedSessions()
         }
     }
 }

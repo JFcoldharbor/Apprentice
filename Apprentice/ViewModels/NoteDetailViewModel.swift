@@ -134,6 +134,7 @@ final class NoteDetailViewModel: ObservableObject {
     // MARK: - Delete
 
     func deleteNote() {
+        AriaMirror.shared.deleteNote(noteId: note.id.uuidString) // also forget it in shared memory
         AudioFileStore.shared.deleteFiles(for: note)
         context.delete(note)
         try? context.save()

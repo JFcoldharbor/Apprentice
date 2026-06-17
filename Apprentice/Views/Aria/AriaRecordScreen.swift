@@ -11,6 +11,7 @@ import SwiftUI
 
 struct AriaRecordScreen: View {
     @StateObject private var vm = RecordingViewModel(context: NoteStore.mainContext)
+    @ObservedObject private var handoff = RecordingHandoff.shared
     @State private var context: AriaRecordContext = .personal
     @State private var showingContext = false
     @State private var finishedNote: Note?
@@ -55,7 +56,20 @@ struct AriaRecordScreen: View {
             AriaContextSheet(selected: $context)
                 .presentationDetents([.medium, .large])
         }
-        .onAppear { pulse = true }
+        .onAppear { pulse = true; consumePrefill() }
+        .onChange(of: handoff.prefill) { _, _ in consumePrefill() }
+    }
+
+    /// Begin a recording pre-filled from a staged "Upcoming" session that the user
+    /// tapped Start on (handed over via RecordingHandoff).
+    private func consumePrefill() {
+        guard let p = handoff.prefill, !vm.isActive else { return }
+        handoff.prefill = nil
+        finishedNote = nil
+        vm.noteType = p.type
+        vm.pendingTitle = p.title
+        vm.pendingAttendees = p.attendees
+        vm.start()
     }
 
     // MARK: Context card

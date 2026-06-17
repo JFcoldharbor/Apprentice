@@ -51,6 +51,53 @@ struct AIClient {
         try await post(system: system, messages: messages, tier: tier, maxTokens: maxTokens, schema: nil).text
     }
 
+    /// A coach turn that may stage a session: the proxy offers Aria the
+    /// schedule_session tool + the current date/time. If she schedules something,
+    /// the created session comes back so the app can mirror it locally.
+    struct ScheduledSessionDTO: Decodable, Equatable {
+        let id: String
+        let title: String
+        let type: String
+        let attendees: [String]
+        let scheduledFor: String
+    }
+    struct CoachReply { let text: String; let scheduled: ScheduledSessionDTO? }
+
+    func coachChat(system: String?,
+                   messages: [AIChatMessage],
+                   maxTokens: Int = 1500) async throws -> CoachReply {
+        guard ProxyConfig.isConfigured else { throw AIError.notConfigured }
+
+        var body: [String: Any] = [
+            "tier": AITier.standard.rawValue,
+            "max_tokens": maxTokens,
+            "allowScheduling": true,
+            "messages": messages.map { ["role": $0.role, "content": $0.content] },
+        ]
+        if let system, !system.isEmpty { body["system"] = system }
+
+        let url = URL(string: "\(ProxyConfig.baseURL)/chat")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(ProxyConfig.sharedSecret, forHTTPHeaderField: "x-proxy-secret")
+        if let token = await AuthService.shared.currentIDToken() {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let (data, response) = try await Self.session.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw AIError.http(-1, "Invalid response") }
+        guard http.statusCode == 200 else {
+            throw AIError.http(http.statusCode, String(data: data, encoding: .utf8) ?? "")
+        }
+        guard let decoded = try? JSONDecoder().decode(CoachResponse.self, from: data) else {
+            throw AIError.decoding
+        }
+        return CoachReply(text: decoded.text, scheduled: decoded.scheduledSession)
+    }
+    private struct CoachResponse: Decodable { let text: String; let scheduledSession: ScheduledSessionDTO? }
+
     /// Structured completion — the proxy constrains Claude's output to `schema`,
     /// and the returned JSON text is decoded into `T`.
     func chatJSON<T: Decodable>(_ type: T.Type,

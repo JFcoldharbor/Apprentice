@@ -30,6 +30,10 @@ final class Note {
     /// Total recorded duration in seconds.
     var duration: TimeInterval = 0
 
+    /// For a pre-staged (status == .scheduled) session: when the meeting is set
+    /// to happen. nil for recorded notes (which use `createdAt`).
+    var scheduledFor: Date? = nil
+
     var tags: [String] = []
     var attendees: [String] = []
 

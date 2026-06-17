@@ -57,12 +57,19 @@ final class CoachViewModel: ObservableObject {
         while let first = history.first, first.role != "user" { history.removeFirst() }
 
         do {
-            let reply = try await AIClient.shared.chatText(
+            let result = try await AIClient.shared.coachChat(
                 system: system,
                 messages: history,
-                tier: .standard,
                 maxTokens: 1500
             )
+            let reply = result.text
+            // If Aria staged a session this turn, mirror it into the local Sessions
+            // list (same id as the shared record) so it shows up immediately.
+            if let s = result.scheduled, let when = ISO8601DateFormatter().date(from: s.scheduledFor) {
+                SessionManager.shared.ingestScheduled(
+                    id: s.id, title: s.title, type: s.type, attendees: s.attendees, scheduledFor: when
+                )
+            }
             context.insert(CoachMessage(role: "assistant", text: reply))
             try? context.save()
             AriaMirror.shared.mirrorTurn(role: "assistant", content: reply) // → shared thread

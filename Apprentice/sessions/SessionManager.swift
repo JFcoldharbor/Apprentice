@@ -20,6 +20,15 @@ import SwiftUI
 import SwiftData
 import Combine
 
+/// A pre-staged upcoming session shown in the Sessions "Upcoming" list.
+struct ScheduledSession: Identifiable, Equatable {
+    let id: UUID
+    var title: String
+    var type: NoteType
+    var attendees: [String]
+    var scheduledFor: Date
+}
+
 @MainActor
 class SessionManager: ObservableObject {
 
@@ -30,6 +39,7 @@ class SessionManager: ObservableObject {
     // MARK: - Published Properties
 
     @Published var sessions: [ExecutiveSession] = []
+    @Published var scheduled: [ScheduledSession] = []   // pre-staged upcoming sessions
     @Published var isLoading = false
     @Published var lastError: String?
 
@@ -84,10 +94,21 @@ class SessionManager: ObservableObject {
         )
         do {
             let notes = try context.fetch(descriptor)
-            sessions = notes.map { $0.asExecutiveSession() }
+            // Pre-staged sessions live in their own "Upcoming" list; the archive is
+            // everything that's actually been (or is being) recorded.
+            sessions = notes.filter { $0.status != .scheduled }.map { $0.asExecutiveSession() }
+            scheduled = notes.filter { $0.status == .scheduled }
+                .map {
+                    ScheduledSession(
+                        id: $0.id, title: $0.title, type: $0.type,
+                        attendees: $0.attendees, scheduledFor: $0.scheduledFor ?? $0.createdAt
+                    )
+                }
+                .sorted { $0.scheduledFor < $1.scheduledFor }
         } catch {
             lastError = "Failed to load notes: \(error.localizedDescription)"
             sessions = []
+            scheduled = []
         }
     }
 
@@ -135,6 +156,7 @@ class SessionManager: ObservableObject {
     func deleteSession(withId id: UUID) {
         guard let note = note(withId: id) else { return }
         let title = note.title
+        AriaMirror.shared.deleteNote(noteId: note.id.uuidString)  // forget it in shared memory too (web War Room)
         AudioFileStore.shared.deleteFiles(for: note)   // retained audio removed only on delete
         context.delete(note)
         save()
@@ -191,6 +213,143 @@ class SessionManager: ObservableObject {
         save()
         refresh()
         return note.asExecutiveSession()
+    }
+
+    // MARK: - Scheduled / pre-staged sessions
+
+    /// Stage an upcoming session (manual add or Aria). Persists locally as a
+    /// `.scheduled` Note and mirrors it to the shared list (web War Room sees it).
+    @discardableResult
+    func schedule(title: String, type: NoteType, attendees: [String], scheduledFor: Date) -> ScheduledSession {
+        let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let note = Note(
+            title: cleanTitle.isEmpty ? "\(type.displayName)" : cleanTitle,
+            type: type,
+            status: .scheduled,
+            attendees: attendees
+        )
+        note.scheduledFor = scheduledFor
+        context.insert(note)
+        save()
+        refresh()
+        AttendeeRoster.remember(attendees)
+        AriaMirror.shared.upsertScheduledSession(
+            id: note.id.uuidString, title: note.title, type: type.rawValue,
+            attendees: attendees, scheduledFor: scheduledFor
+        )
+        return ScheduledSession(id: note.id, title: note.title, type: type, attendees: attendees, scheduledFor: scheduledFor)
+    }
+
+    /// Remove a staged session (cancelled) from local + shared list.
+    func cancelScheduled(id: UUID) {
+        guard let note = note(withId: id) else { return }
+        AriaMirror.shared.deleteScheduledSession(id: note.id.uuidString)
+        context.delete(note)
+        save()
+        refresh()
+    }
+
+    /// Begin recording from a staged session: returns its prefill and removes the
+    /// staged record (the live recording creates its own Note).
+    func startScheduled(id: UUID) -> RecordPrefill? {
+        guard let note = note(withId: id) else { return nil }
+        let prefill = RecordPrefill(title: note.title, type: note.type, attendees: note.attendees)
+        AriaMirror.shared.deleteScheduledSession(id: note.id.uuidString)
+        context.delete(note)
+        save()
+        refresh()
+        return prefill
+    }
+
+    /// Pull the shared upcoming list and materialize any sessions (e.g. created by
+    /// Aria on the web) that aren't already staged locally. Add-only merge.
+    func syncScheduledFromCloud() async {
+        let remote = await AriaMirror.shared.fetchScheduledSessions()
+        var changed = false
+        for r in remote where UUID(uuidString: r.id) != nil {
+            let uuid = UUID(uuidString: r.id)!
+            guard note(withId: uuid) == nil else { continue }
+            let note = Note(
+                id: uuid, title: r.title,
+                type: NoteType(rawValue: r.type) ?? .general,
+                status: .scheduled, attendees: r.attendees
+            )
+            note.scheduledFor = r.scheduledFor
+            context.insert(note)
+            changed = true
+        }
+        if changed { save(); refresh() }
+    }
+
+    /// Materialize a single scheduled session that Aria just created on this phone
+    /// (returned by /chat), keeping the same id as the shared record.
+    func ingestScheduled(id: String, title: String, type: String, attendees: [String], scheduledFor: Date) {
+        guard let uuid = UUID(uuidString: id), note(withId: uuid) == nil else { return }
+        let note = Note(
+            id: uuid, title: title,
+            type: NoteType(rawValue: type) ?? .general,
+            status: .scheduled, attendees: attendees
+        )
+        note.scheduledFor = scheduledFor
+        context.insert(note)
+        save()
+        refresh()
+    }
+
+    // MARK: - Analysis (enrichment) — also mirrors the summary to the shared Aria
+    // memory, so an analyzed session becomes visible to the web War Room's Aria.
+
+    /// (Re)run Claude analysis for one session. Force regenerates even if a
+    /// summary already exists. Returns true if a summary was produced.
+    @discardableResult
+    func analyze(sessionId: UUID) async -> Bool {
+        guard let note = note(withId: sessionId) else { return false }
+        let ok = await NoteEnrichmentService.enrich(note, context: context, force: true)
+        refresh()
+        return ok
+    }
+
+    /// Catch-up: any completed session that has a transcript but no AI summary
+    /// (enrichment failed mid-flight, the app was closed, the proxy hiccuped) gets
+    /// analyzed now — which also mirrors it to the shared memory. Idempotent.
+    func enrichPendingSessions() async {
+        let all = (try? context.fetch(FetchDescriptor<Note>())) ?? []
+        // Heal stale recordings: a note left .inProgress (app closed/crashed mid-
+        // record, or a hung transcription segment) can never analyze on its own.
+        // On launch there's no active capture, so finalize them so they can be
+        // analyzed and synced like any other session.
+        var healed = false
+        for note in all where note.status == .inProgress {
+            note.status = .completed
+            note.updatedAt = Date()
+            healed = true
+        }
+        if healed { save() }
+
+        // Analyze anything completed with a transcript but no summary — ignoring a
+        // possibly-stuck chunk (on launch a "processing" chunk is just stale).
+        let pending = all.filter {
+            $0.status == .completed &&
+            $0.aiSummary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+            !$0.fullTranscript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        for note in pending {
+            _ = await NoteEnrichmentService.enrich(note, context: context)
+        }
+        if healed || !pending.isEmpty { refresh() }
+    }
+
+    /// Backfill: re-mirror EVERY analyzed session to the shared memory (idempotent
+    /// upsert). Heals sessions whose mirror was previously missed — e.g. analyzed
+    /// before the mirror worked, or a failed/offline POST — so web Aria ends up
+    /// with the complete set of debriefs, not just the most recent ones.
+    func syncAnalyzedSessions() {
+        let all = (try? context.fetch(FetchDescriptor<Note>())) ?? []
+        // Any session that HAS a summary gets mirrored — regardless of status, so a
+        // stuck/.inProgress-but-analyzed session is no longer skipped.
+        for note in all where !note.aiSummary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            AriaMirror.shared.mirrorNote(from: note)
+        }
     }
 
     func addNoteToSession(sessionId: UUID, note structured: StructuredNote) {
