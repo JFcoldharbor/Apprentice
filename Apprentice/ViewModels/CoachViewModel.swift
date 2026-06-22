@@ -44,7 +44,7 @@ final class CoachViewModel: ObservableObject {
     private func respond(to text: String) async {
         defer { isSending = false }
 
-        let system = CoachPersona.system + "\n\n" + CoachContext.build(query: text, context: context)
+        let system = await CoachContext.buildSystemPrompt(query: text, context: context)
 
         // Prefer the SHARED thread (web War Room + phone) so Aria continues the
         // same cross-device conversation; fall back to local history if offline.

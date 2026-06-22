@@ -25,6 +25,7 @@ struct AriaVoiceSheet: View {
     @State private var lastReply = ""
     @State private var pulse = false
     @State private var errorText: String?
+    @State private var emptyListens = 0   // consecutive listens that captured nothing
 
     private let context = NoteStore.mainContext
 
@@ -163,13 +164,25 @@ struct AriaVoiceSheet: View {
         guard active, phase == .listening else { return }
         let said = dictation.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
         if said.isEmpty {
-            // Silence with nothing said — listen again after a short beat to avoid a tight loop.
+            // Nothing captured. A few of these in a row means the mic isn't feeding
+            // audio (dead route / no permission) rather than the founder pausing —
+            // stop and say so instead of re-kicking forever.
+            emptyListens += 1
+            if emptyListens >= 3 {
+                active = false
+                phase = .idle
+                dictation.stop()
+                errorText = "I'm not hearing any audio. Check microphone access for Apprentice in Settings, then tap the orb to try again."
+                return
+            }
+            // Otherwise listen again after a short beat (also heals a cold audio route).
             Task { @MainActor in
                 try? await Task.sleep(nanoseconds: 400_000_000)
                 if active, phase == .listening, !dictation.isListening { await dictation.start() }
             }
             return
         }
+        emptyListens = 0
         sendToAria(said)
     }
 
@@ -178,7 +191,12 @@ struct AriaVoiceSheet: View {
         case .listening: dictation.stop()      // → turnCaptured (sends what was said)
         case .speaking:  voice.stop()          // interrupt → resumeListening
         case .thinking:  break
-        case .idle:      resumeListening()
+        case .idle:
+            // Explicit retry (incl. after the no-audio error) — reset and re-arm.
+            active = true
+            emptyListens = 0
+            errorText = nil
+            resumeListening()
         }
     }
 
@@ -190,11 +208,19 @@ struct AriaVoiceSheet: View {
 
         Task { @MainActor in
             do {
-                let system = CoachPersona.system + "\n\n" + CoachContext.build(query: said, context: context)
-                let reply = try await AIClient.shared.chatText(
-                    system: system, messages: recentHistory(), tier: .standard, maxTokens: 1500)
+                let system = await CoachContext.buildSystemPrompt(query: said, context: context)
+                // coachChat (not chatText) so the voice orb gets Aria's tools too —
+                // she can create_document ("build me a launch plan") and schedule a
+                // session by voice; the doc surfaces on the web War Room.
+                let result = try await AIClient.shared.coachChat(
+                    system: system, messages: recentHistory(), maxTokens: 1500)
+                let reply = result.text
                 context.insert(CoachMessage(role: "assistant", text: reply))
                 try? context.save()
+                if let s = result.scheduled, let when = ISO8601DateFormatter().date(from: s.scheduledFor) {
+                    SessionManager.shared.ingestScheduled(
+                        id: s.id, title: s.title, type: s.type, attendees: s.attendees, scheduledFor: when)
+                }
                 guard active else { return }
                 lastReply = reply
                 phase = .speaking

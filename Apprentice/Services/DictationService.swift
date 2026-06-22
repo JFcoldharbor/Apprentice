@@ -34,6 +34,8 @@ final class DictationService: ObservableObject {
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var task: SFSpeechRecognitionTask?
     private var silenceTimer: Timer?
+    private var routeWatchdog: Timer?
+    private var bufferSeen = false // did the audio tap deliver any buffer this start?
     private var accumulated = ""   // finalized text from earlier segments this turn
     private var ending = false     // true once the silence timer fires → real stop
 
@@ -51,6 +53,7 @@ final class DictationService: ObservableObject {
         transcript = ""
         accumulated = ""
         ending = false
+        bufferSeen = false
 
         do {
             let session = AVAudioSession.sharedInstance()
@@ -62,12 +65,21 @@ final class DictationService: ObservableObject {
             // installTap crash ("CreateRecordingTap: nullptr == Tap()").
             input.removeTap(onBus: 0)
             let format = input.outputFormat(forBus: 0)
+            // `signalledBuffer` lives only on the audio render thread (the tap
+            // closure), so it needs no synchronization; it flips `bufferSeen` on
+            // main exactly once, the first time real audio arrives.
+            var signalledBuffer = false
             input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
                 self?.request?.append(buffer)
+                if !signalledBuffer {
+                    signalledBuffer = true
+                    DispatchQueue.main.async { self?.bufferSeen = true }
+                }
             }
             engine.prepare()
             try engine.start()
             isListening = true
+            armRouteWatchdog()
             beginSegment()
         } catch {
             print("⚠️ DictationService: \(error.localizedDescription)")
@@ -111,6 +123,24 @@ final class DictationService: ObservableObject {
         }
     }
 
+    /// If the audio tap delivers no buffers shortly after the engine starts, the
+    /// input route never came up — a cold-start race right after the session
+    /// switched category (e.g. just after Aria finished speaking, or the very
+    /// first listen when the sheet opens). End the turn so the voice sheet
+    /// re-kicks a fresh start on the now-warm route, instead of sitting in
+    /// "Listening…" with a dead mic until the founder taps the orb.
+    private func armRouteWatchdog() {
+        routeWatchdog?.invalidate()
+        routeWatchdog = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: false) { [weak self] _ in
+            Task { @MainActor in self?.checkRoute() }
+        }
+    }
+
+    private func checkRoute() {
+        guard isListening, !ending, !bufferSeen else { return }
+        endTurn() // → stop() → isListening = false → the sheet schedules a fresh start
+    }
+
     /// Reset the silence countdown; only true silence (no new speech for
     /// `silenceInterval`) ends the turn.
     private func armSilence() {
@@ -129,6 +159,8 @@ final class DictationService: ObservableObject {
     func stop() {
         silenceTimer?.invalidate()
         silenceTimer = nil
+        routeWatchdog?.invalidate()
+        routeWatchdog = nil
         ending = true
         if engine.isRunning {
             engine.stop()
