@@ -20,7 +20,8 @@ enum NoteStore {
         AudioChunk.self,
         NoteAction.self,
         NoteDecision.self,
-        CoachMessage.self
+        CoachMessage.self,
+        InterviewRecord.self
     ])
 
     /// Toggle for iCloud sync. Keep false until models are CloudKit-audited.

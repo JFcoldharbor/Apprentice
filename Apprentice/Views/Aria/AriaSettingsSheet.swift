@@ -41,6 +41,10 @@ struct AriaSettingsSheet: View {
                     AriaDocumentsScreen()
                         .navigationBarTitleDisplayMode(.inline)
                         .toolbarBackground(.hidden, for: .navigationBar)
+                } else if dest == "discovery" {
+                    AriaDiscoveryScreen()
+                        .navigationBarTitleDisplayMode(.inline)
+                        .toolbarBackground(.hidden, for: .navigationBar)
                 }
             }
         }
@@ -55,6 +59,11 @@ struct AriaSettingsSheet: View {
             NavigationLink(value: "documents") {
                 row(icon: "folder", tint: Aria.rose, title: "Documents & sources",
                     subtitle: "Investor data room + uploaded files", chevron: true)
+            }
+            .buttonStyle(.plain)
+            NavigationLink(value: "discovery") {
+                row(icon: "person.line.dotted.person", tint: Aria.jade, title: "Customer Discovery",
+                    subtitle: "Log interviews → War Room charts + gates", chevron: true)
             }
             .buttonStyle(.plain)
         }
