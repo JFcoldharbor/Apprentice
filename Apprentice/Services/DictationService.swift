@@ -29,12 +29,22 @@ final class DictationService: ObservableObject {
     /// How long the founder can pause (gather his thoughts) before the turn ends.
     var silenceInterval: TimeInterval = 3.0
 
+    /// Force-finalize the current recognition segment at least this often. On-device
+    /// SFSpeechRecognizer has a finite hypothesis window: on a long *continuous*
+    /// utterance (no pause to trigger a natural finalize) its `formattedString`
+    /// starts sliding — dropping the earliest words — which looked like the
+    /// transcript "erasing" mid-sentence and picking up incoherently. Rotating the
+    /// segment well before that limit folds finalized text into `accumulated` and
+    /// keeps the live segment short, so the transcript only ever grows.
+    var maxSegmentInterval: TimeInterval = 25.0
+
     private let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
     private let engine = AVAudioEngine()
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var task: SFSpeechRecognitionTask?
     private var silenceTimer: Timer?
     private var routeWatchdog: Timer?
+    private var segmentTimer: Timer?
     private var bufferSeen = false // did the audio tap deliver any buffer this start?
     private var accumulated = ""   // finalized text from earlier segments this turn
     private var ending = false     // true once the silence timer fires → real stop
@@ -121,6 +131,27 @@ final class DictationService: ObservableObject {
                 Task { @MainActor in if self.isListening { self.endTurn() } }
             }
         }
+        armSegmentRotation()
+    }
+
+    /// Schedule a forced finalize so the current segment never grows long enough
+    /// for the on-device recognizer's hypothesis window to start dropping early
+    /// words. Re-armed by each `beginSegment`.
+    private func armSegmentRotation() {
+        segmentTimer?.invalidate()
+        segmentTimer = Timer.scheduledTimer(withTimeInterval: maxSegmentInterval, repeats: false) { [weak self] _ in
+            Task { @MainActor in self?.rotateSegment() }
+        }
+    }
+
+    /// Finalize the current segment mid-speech. `endAudio()` makes the recognizer
+    /// emit a final result, which the task callback folds into `accumulated` and
+    /// then restarts a fresh segment (re-arming rotation) — so the durable text is
+    /// preserved and the live segment stays short. A natural finalize (pause) does
+    /// the same thing; this just guarantees it happens during long monologues too.
+    private func rotateSegment() {
+        guard isListening, !ending else { return }
+        request?.endAudio()
     }
 
     /// If the audio tap delivers no buffers shortly after the engine starts, the
@@ -161,6 +192,8 @@ final class DictationService: ObservableObject {
         silenceTimer = nil
         routeWatchdog?.invalidate()
         routeWatchdog = nil
+        segmentTimer?.invalidate()
+        segmentTimer = nil
         ending = true
         if engine.isRunning {
             engine.stop()
