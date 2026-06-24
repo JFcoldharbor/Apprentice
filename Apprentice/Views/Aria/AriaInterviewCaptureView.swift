@@ -30,6 +30,26 @@ struct AriaInterviewCaptureView: View {
     @State private var selectedThemes: Set<DiscoveryTheme> = []
     @State private var quotes: [String] = [""]
 
+    /// Optional pre-fill from a transcript draft (Aria-extracted); the founder
+    /// reviews/edits before saving.
+    init(draft: DiscoveryDraft? = nil) {
+        _who = State(initialValue: draft?.who ?? "")
+        _group = State(initialValue: draft?.group ?? .parents)
+        _situation = State(initialValue: draft?.situation ?? .none)
+        _howTheyShareToday = State(initialValue: draft?.howTheyShareToday ?? "")
+        _frustration = State(initialValue: draft?.frustration ?? "")
+        _frustrationRaised = State(initialValue: draft?.frustrationRaised ?? .none)
+        _whatItCosts = State(initialValue: draft?.whatItCosts ?? "")
+        _workaround = State(initialValue: draft?.workaround ?? "")
+        _adoptionScore = State(initialValue: Double(draft?.adoptionScore ?? 5))
+        _frustrationScore = State(initialValue: Double(draft?.frustrationScore ?? 5))
+        _whatIfReaction = State(initialValue: draft?.whatIfReaction ?? .flat)
+        _willPay = State(initialValue: draft?.willPay ?? .unknown)
+        _selectedThemes = State(initialValue: Set(draft?.themes ?? []))
+        let q = draft?.quotes ?? []
+        _quotes = State(initialValue: q.isEmpty ? [""] : q)
+    }
+
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
