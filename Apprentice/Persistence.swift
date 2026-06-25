@@ -29,10 +29,14 @@ struct PersistenceController {
         return result
     }()
 
-    let container: NSPersistentCloudKitContainer
+    // Plain Core Data (no CloudKit). This is unused template scaffolding — the
+    // app's real data is SwiftData (NoteStore) + the per-user proxy. CloudKit is
+    // dropped because it forces an iCloud entitlement (which broke App Store
+    // validation) and syncs per Apple-ID, which is incompatible with multi-tenancy.
+    let container: NSPersistentContainer
 
     init(inMemory: Bool = false) {
-        container = NSPersistentCloudKitContainer(name: "Apprentice")
+        container = NSPersistentContainer(name: "Apprentice")
         if inMemory {
             container.persistentStoreDescriptions.first!.url = URL(fileURLWithPath: "/dev/null")
         }
