@@ -89,6 +89,8 @@ final class DictationService: ObservableObject {
             engine.prepare()
             try engine.start()
             isListening = true
+            NotificationCenter.default.addObserver(self, selector: #selector(handleInterruption(_:)),
+                                                   name: AVAudioSession.interruptionNotification, object: nil)
             armRouteWatchdog()
             beginSegment()
         } catch {
@@ -187,7 +189,18 @@ final class DictationService: ObservableObject {
         stop() // → isListening = false → the voice sheet sends what was said
     }
 
+    /// A call/text/Siri interrupted the mic. When it ends, end this turn so the
+    /// voice sheet re-kicks a fresh listen on the now-available mic (rather than
+    /// sitting dead). nonisolated because NotificationCenter calls off the main actor.
+    @objc nonisolated private func handleInterruption(_ note: Notification) {
+        guard let info = note.userInfo,
+              let raw = info[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: raw), type == .ended else { return }
+        Task { @MainActor in if self.isListening { self.endTurn() } }
+    }
+
     func stop() {
+        NotificationCenter.default.removeObserver(self, name: AVAudioSession.interruptionNotification, object: nil)
         silenceTimer?.invalidate()
         silenceTimer = nil
         routeWatchdog?.invalidate()
