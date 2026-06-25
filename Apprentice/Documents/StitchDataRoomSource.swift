@@ -48,7 +48,6 @@ struct StitchDataRoomSource: DocumentSource {
         let url = URL(string: "\(ProxyConfig.baseURL)/syncDataRoom")!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        request.setValue(ProxyConfig.sharedSecret, forHTTPHeaderField: "x-proxy-secret")
         if let token = await AuthService.shared.currentIDToken() {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }

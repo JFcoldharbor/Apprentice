@@ -45,7 +45,6 @@ struct ProxyTranscriptionService: TranscriptionService {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("audio/m4a", forHTTPHeaderField: "Content-Type")
-        request.setValue(ProxyConfig.sharedSecret, forHTTPHeaderField: "x-proxy-secret")
         request.setValue(fileURL.lastPathComponent, forHTTPHeaderField: "x-filename")
         // Preferred auth: Firebase ID token. Falls back to the shared secret above.
         if let token = await AuthService.shared.currentIDToken() {

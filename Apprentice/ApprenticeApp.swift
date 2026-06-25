@@ -24,8 +24,8 @@ struct ApprenticeApp: App {
                 .task {
                     // One-time migration of legacy UserDefaults sessions -> SwiftData.
                     LegacyMigrator.migrateIfNeeded(context: NoteStore.mainContext)
-                    // Ensure there's a Firebase identity so proxy calls carry an ID token.
-                    await AuthService.shared.bootstrap()
+                    // Refresh auth state (the sign-in gate handles signing in).
+                    AuthService.shared.bootstrap()
                 }
         }
         .modelContainer(NoteStore.container)

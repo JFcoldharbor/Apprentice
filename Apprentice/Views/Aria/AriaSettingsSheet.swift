@@ -12,6 +12,7 @@ import SwiftUI
 struct AriaSettingsSheet: View {
     @Environment(\.dismiss) private var dismiss
 
+    @ObservedObject private var auth = AuthService.shared
     @AppStorage("coach_autospeak") private var autoSpeak = false
     @AppStorage("coach_voice_id") private var voiceId = ""
 
@@ -26,6 +27,7 @@ struct AriaSettingsSheet: View {
                 AriaSheetHeader(title: "Settings", onClose: { dismiss() })
                 ScrollView(showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 24) {
+                        account
                         knowledge
                         voice
                         connection
@@ -52,6 +54,40 @@ struct AriaSettingsSheet: View {
     }
 
     // MARK: Sections
+
+    private var account: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            AriaSectionLabel(text: "Account")
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: 14) {
+                    Image(systemName: "person.crop.circle").font(.system(size: 16)).foregroundColor(Aria.goldBright)
+                        .frame(width: 38, height: 38)
+                        .background(RoundedRectangle(cornerRadius: 11).fill(Aria.goldBright.opacity(0.14)))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(auth.email?.isEmpty == false ? auth.email! : "Signed in with Apple")
+                            .font(.inter(14.5, .semibold)).foregroundColor(Aria.ivory).lineLimit(1)
+                        Text(auth.uid ?? "—")
+                            .font(.system(size: 10.5, design: .monospaced)).foregroundColor(Aria.ivoryFaint)
+                            .lineLimit(1).textSelection(.enabled)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(16)
+                Divider().overlay(Aria.lineSoft)
+                Button { auth.signOut() } label: {
+                    HStack {
+                        Text("Sign out").font(.inter(14)).foregroundColor(Aria.rose)
+                        Spacer()
+                        Image(systemName: "rectangle.portrait.and.arrow.right").font(.system(size: 13)).foregroundColor(Aria.rose)
+                    }
+                    .padding(16)
+                }
+                .buttonStyle(.plain)
+            }
+            .background(Aria.panel).clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(Aria.lineSoft, lineWidth: 1))
+        }
+    }
 
     private var knowledge: some View {
         VStack(alignment: .leading, spacing: 12) {

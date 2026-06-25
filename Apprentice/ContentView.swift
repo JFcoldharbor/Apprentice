@@ -14,6 +14,7 @@ struct ContentView: View {
     @StateObject private var sessionManager = SessionManager.shared
     @StateObject private var profileManager = FounderProfileManager.shared
     @StateObject private var audioRecorder = AudioRecorder()
+    @StateObject private var auth = AuthService.shared
     
     @State private var selectedTab = 0
     @State private var showingProfileSetup = false
@@ -34,7 +35,9 @@ struct ContentView: View {
             Color.clear
                 .ignoresSafeArea(.all)
             
-            if showingProfileSetup {
+            if !auth.isSignedIn {
+                AriaSignInView()
+            } else if showingProfileSetup {
                 OnboardingFlow(profileManager: profileManager) {
                     checkOnboardingStatus()
                 }

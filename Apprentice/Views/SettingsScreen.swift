@@ -120,8 +120,7 @@ struct SettingsScreen: View {
     // MARK: - Helpers
 
     private var accountStatus: String {
-        guard auth.uid != nil else { return "Not signed in" }
-        return auth.isAnonymous ? "Anonymous" : "Signed in"
+        auth.isSignedIn ? "Signed in" : "Not signed in"
     }
 
     private var appVersion: String {

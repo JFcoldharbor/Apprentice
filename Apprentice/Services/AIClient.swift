@@ -80,7 +80,6 @@ struct AIClient {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue(ProxyConfig.sharedSecret, forHTTPHeaderField: "x-proxy-secret")
         if let token = await AuthService.shared.currentIDToken() {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
@@ -137,7 +136,6 @@ struct AIClient {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue(ProxyConfig.sharedSecret, forHTTPHeaderField: "x-proxy-secret")
         if let token = await AuthService.shared.currentIDToken() {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }

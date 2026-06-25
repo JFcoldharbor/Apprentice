@@ -91,7 +91,6 @@ struct AriaMirror {
         guard ProxyConfig.isConfigured,
               let url = URL(string: "\(ProxyConfig.baseURL)/scheduledSessions") else { return [] }
         var request = URLRequest(url: url) // GET
-        request.setValue(ProxyConfig.sharedSecret, forHTTPHeaderField: "x-proxy-secret")
         if let token = await AuthService.shared.currentIDToken() {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
@@ -119,7 +118,6 @@ struct AriaMirror {
     func fetchThread() async -> [AIChatMessage] {
         guard ProxyConfig.isConfigured, let url = URL(string: "\(ProxyConfig.baseURL)/mirror") else { return [] }
         var request = URLRequest(url: url) // GET
-        request.setValue(ProxyConfig.sharedSecret, forHTTPHeaderField: "x-proxy-secret")
         if let token = await AuthService.shared.currentIDToken() {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
@@ -144,7 +142,6 @@ struct AriaMirror {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue(ProxyConfig.sharedSecret, forHTTPHeaderField: "x-proxy-secret")
         if let token = await AuthService.shared.currentIDToken() {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }

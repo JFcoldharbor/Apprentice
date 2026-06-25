@@ -21,12 +21,16 @@ enum ProxyConfig {
         return value.hasSuffix("/") ? String(value.dropLast()) : value
     }
 
+    // The app no longer sends the shared secret — it authenticates with the
+    // signed-in user's Firebase ID token (token-only, per-user). Kept only so a
+    // build that still carries it doesn't break; nothing reads it for requests.
     static var sharedSecret: String {
         Secrets.proxySharedSecret
     }
 
-    /// True once both values are present — the app then prefers the proxy.
-    static var isConfigured: Bool { !baseURL.isEmpty && !sharedSecret.isEmpty }
+    /// True once the proxy URL is set — the app then prefers the proxy (auth is
+    /// the user's ID token, so no secret is required in the build).
+    static var isConfigured: Bool { !baseURL.isEmpty }
 }
 
 /// Chooses the proxy-backed transcription path when configured, else the direct
