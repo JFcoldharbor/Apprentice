@@ -173,16 +173,23 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = Apprentice/Apprentice.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = ULR7W726N5;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Apprentice/Info.plist;
+				INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "Stitch Executive AI needs full calendar access to automatically create coaching sessions, analyze meeting patterns, and provide intelligent scheduling recommendations for optimal executive productivity.";
+				INFOPLIST_KEY_NSCalendarsWriteOnlyAccessUsageDescription = "Stitch Executive AI uses calendar write access to schedule AI coaching sessions and create follow-up meetings based on your business intelligence insights and action items.";
+				INFOPLIST_KEY_NSDesktopFolderUsageDescription = "Stitch Executive AI needs access to analyze desktop documents to provide complete business intelligence analysis and executive recommendations.";
+				INFOPLIST_KEY_NSDocumentsFolderUsageDescription = "Stitch Executive AI needs access to analyze business documents for insights, extract key information, and provide intelligent recommendations based on your business data.";
+				INFOPLIST_KEY_NSDownloadsFolderUsageDescription = "Stitch Executive AI needs access to analyze downloaded business documents for comprehensive business intelligence and strategic insights.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Stitch Executive AI needs microphone access to record executive coaching sessions, provide voice-to-text transcription, and enable hands-free AI conversation features.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Stitch Executive AI uses speech recognition to transcribe coaching sessions and enable natural voice conversations with your AI executive assistant.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -203,16 +210,23 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = Apprentice/Apprentice.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = ULR7W726N5;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Apprentice/Info.plist;
+				INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "Stitch Executive AI needs full calendar access to automatically create coaching sessions, analyze meeting patterns, and provide intelligent scheduling recommendations for optimal executive productivity.";
+				INFOPLIST_KEY_NSCalendarsWriteOnlyAccessUsageDescription = "Stitch Executive AI uses calendar write access to schedule AI coaching sessions and create follow-up meetings based on your business intelligence insights and action items.";
+				INFOPLIST_KEY_NSDesktopFolderUsageDescription = "Stitch Executive AI needs access to analyze desktop documents to provide complete business intelligence analysis and executive recommendations.";
+				INFOPLIST_KEY_NSDocumentsFolderUsageDescription = "Stitch Executive AI needs access to analyze business documents for insights, extract key information, and provide intelligent recommendations based on your business data.";
+				INFOPLIST_KEY_NSDownloadsFolderUsageDescription = "Stitch Executive AI needs access to analyze downloaded business documents for comprehensive business intelligence and strategic insights.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Stitch Executive AI needs microphone access to record executive coaching sessions, provide voice-to-text transcription, and enable hands-free AI conversation features.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Stitch Executive AI uses speech recognition to transcribe coaching sessions and enable natural voice conversations with your AI executive assistant.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
